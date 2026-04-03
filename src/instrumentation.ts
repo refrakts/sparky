@@ -32,5 +32,6 @@ export const onRequestError = async (
         }
 
         await posthog.captureException(err, distinctId);
+        await posthog.shutdown();
     }
 };
