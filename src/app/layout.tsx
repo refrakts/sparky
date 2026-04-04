@@ -19,7 +19,7 @@ const gelasio = localFont({
 });
 
 export const metadata: Metadata = {
-    metadataBase: new URL('https://sparky-eta.vercel.app'),
+    metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL!),
     title: {
         template: '%s | Sparky',
         default: 'Sparky',
