@@ -19,8 +19,27 @@ const gelasio = localFont({
 });
 
 export const metadata: Metadata = {
-    title: 'Sparky',
+    metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL!),
+    title: {
+        template: '%s | Sparky',
+        default: 'Sparky',
+    },
     description: 'AI-powered Spark blockchain explorer',
+    openGraph: {
+        title: 'Sparky',
+        description: 'AI-powered Spark blockchain explorer',
+        siteName: 'Sparky',
+        type: 'website',
+        locale: 'en_US',
+    },
+    twitter: {
+        card: 'summary',
+        title: 'Sparky',
+        description: 'AI-powered Spark blockchain explorer',
+    },
+    icons: {
+        icon: '/favicon.ico',
+    },
 };
 
 export default function RootLayout({
