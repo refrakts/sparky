@@ -30,7 +30,7 @@ interface FastPathEntry {
 }
 
 const SUGGESTIONS = [
-    { label: 'Network stats', prompt: 'Show me the network stats' },
+    { label: 'Flashnet pools', prompt: 'Show me the Flashnet AMM pools' },
     { label: 'Latest transactions', prompt: 'What are the latest transactions?' },
     { label: 'Top USDB holders', prompt: 'Who holds the most USDB?' },
     { label: 'All tokens', prompt: 'Show me all tokens on the network' },
