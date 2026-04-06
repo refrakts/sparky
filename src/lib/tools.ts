@@ -521,6 +521,7 @@ export const flashnetTools = {
 function withFullOutput<T extends Record<string, any>>(tools: T): T {
     const result = {} as Record<string, unknown>;
     for (const [key, t] of Object.entries(tools)) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const { toModelOutput: _, ...rest } = t as any;
         result[key] = { ...rest };
     }

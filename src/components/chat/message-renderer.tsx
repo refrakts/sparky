@@ -12,6 +12,24 @@ import { useDataCache } from '@/lib/data-cache';
 import { registry } from '@/lib/registry';
 import { useChatPanel } from './chat-panel';
 
+interface SpecNode {
+    type?: string;
+    props?: {
+        layout?: 'inline' | 'panel' | string;
+        [key: string]: unknown;
+    };
+    elements?: Record<string, SpecNode>;
+    children?: unknown[];
+}
+
+interface ToolPart extends Record<string, unknown> {
+    type: string;
+    toolCallId?: string;
+    toolName?: string;
+    state?: string;
+    output?: unknown;
+}
+
 interface MessageRendererProps {
     message: UIMessage;
     isStreaming?: boolean;
@@ -55,8 +73,8 @@ function usePopulateDataCache(parts: UIMessage['parts']) {
     useEffect(() => {
         for (const part of parts) {
             if (!part.type.startsWith('tool-')) continue;
-            const toolPart = part as any;
-            const toolName = part.type.replace('tool-', '');
+            const toolPart = part as ToolPart;
+            const toolName = toolPart.toolName ?? part.type.replace('tool-', '');
             const isDone = toolPart.state === 'output-available' || toolPart.state === 'result';
             if (!isDone || !toolPart.output) continue;
 
@@ -157,7 +175,7 @@ function ToolCallDisplay({ parts }: { parts: UIMessage['parts'] }) {
     return (
         <div className="space-y-1.5">
             {toolParts.map((part, i) => (
-                <ToolCallItem key={i} part={part as any} />
+                <ToolCallItem key={i} part={part as ToolPart} />
             ))}
         </div>
     );
@@ -195,7 +213,7 @@ const DEFAULT_PANEL_COMPONENTS = new Set([
  * Walk a spec and all its elements, checking if any node matches a predicate.
  * Handles both resolved tree specs (nested children) and flat element-map specs.
  */
-function specTreeHas(spec: any, predicate: (node: any) => boolean): boolean {
+function specTreeHas(spec: SpecNode | null | undefined, predicate: (node: SpecNode) => boolean): boolean {
     if (!spec) return false;
 
     // Check the root node itself
@@ -203,12 +221,14 @@ function specTreeHas(spec: any, predicate: (node: any) => boolean): boolean {
 
     // Flat element map (raw JSON Render spec shape: { elements: { id: { type, props, children } } })
     if (spec.elements && typeof spec.elements === 'object') {
-        return Object.values(spec.elements).some((el: any) => el && predicate(el));
+        return Object.values(spec.elements).some((el) => el && predicate(el));
     }
 
     // Resolved tree with nested children
     if (Array.isArray(spec.children)) {
-        return spec.children.some((child: any) => (typeof child === 'object' ? specTreeHas(child, predicate) : false));
+        return spec.children.some((child) =>
+            typeof child === 'object' && child !== null ? specTreeHas(child as SpecNode, predicate) : false,
+        );
     }
 
     return false;
@@ -221,11 +241,11 @@ function specTreeHas(spec: any, predicate: (node: any) => boolean): boolean {
  * `layout: "panel"`, the whole spec goes to the panel. This handles
  * cases where the LLM wraps a TokenList inside Grid > GridItem.
  */
-function shouldRenderInline(spec: any): boolean {
+function shouldRenderInline(spec: SpecNode | null | undefined): boolean {
     if (!spec) return false;
 
     // If any node in the tree is a known-large component → panel
-    if (specTreeHas(spec, (n) => DEFAULT_PANEL_COMPONENTS.has(n.type))) return false;
+    if (specTreeHas(spec, (n) => (n.type ? DEFAULT_PANEL_COMPONENTS.has(n.type) : false))) return false;
 
     // If any node has layout: "panel" → panel
     if (specTreeHas(spec, (n) => n.props?.layout === 'panel')) return false;
@@ -238,7 +258,7 @@ function shouldRenderInline(spec: any): boolean {
 }
 
 export function MessageRenderer({ message, isStreaming, onSuggestionClick }: MessageRendererProps) {
-    const { spec, hasSpec } = useJsonRenderMessage(message.parts as any[]);
+    const { spec, hasSpec } = useJsonRenderMessage(message.parts);
     const { openPanel } = useChatPanel();
 
     // Populate data cache with tool results
@@ -257,7 +277,7 @@ export function MessageRenderer({ message, isStreaming, onSuggestionClick }: Mes
     const allToolsDone =
         toolParts.length > 0 &&
         toolParts.every((p) => {
-            const state = (p as any).state;
+            const state = (p as ToolPart).state;
             return state === 'output-available' || state === 'result';
         });
     // Show pondering when: streaming with no text/spec, AND either no tools yet or all tools finished (model is thinking)

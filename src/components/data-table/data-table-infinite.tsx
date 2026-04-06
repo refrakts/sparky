@@ -206,7 +206,7 @@ export function DataTableInfinite<TData, TValue>({
         [table.getState().columnVisibility],
     );
     const columnOrderString = React.useMemo(() => columnOrder.join(','), [columnOrder]);
-    const live = useFilterState((s) => s.live);
+    const live = useFilterState((s) => s.live) as boolean | undefined;
 
     return (
         <DataTableProvider
