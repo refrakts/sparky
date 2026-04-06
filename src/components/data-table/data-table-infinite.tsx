@@ -63,8 +63,6 @@ export interface DataTableInfiniteProps<TData, TValue> {
     isLoading?: boolean;
     hasNextPage?: boolean;
     fetchNextPage: (options?: FetchNextPageOptions | undefined) => Promise<unknown>;
-    fetchPreviousPage?: (options?: FetchPreviousPageOptions | undefined) => Promise<unknown>;
-    refetch: (options?: RefetchOptions | undefined) => void;
     renderLiveRow?: (props?: { row: Row<TData> }) => React.ReactNode;
     // Used to store column order and visibility in local storage for specific data-table namespace
     tableId?: string;
@@ -90,8 +88,6 @@ export function DataTableInfinite<TData, TValue>({
     isLoading,
     fetchNextPage,
     hasNextPage,
-    fetchPreviousPage,
-    refetch,
     totalRows,
     filterRows,
     totalRowsFetched = 0,
@@ -210,6 +206,7 @@ export function DataTableInfinite<TData, TValue>({
         [table.getState().columnVisibility],
     );
     const columnOrderString = React.useMemo(() => columnOrder.join(','), [columnOrder]);
+    const live = useFilterState((s) => s.live);
 
     return (
         <DataTableProvider
@@ -359,6 +356,7 @@ export function DataTableInfinite<TData, TValue>({
                                                 selected={row.getIsSelected()}
                                                 visibleColumnIds={visibleColumnIds}
                                                 columnOrder={columnOrderString}
+                                                live={live}
                                             />
                                         </React.Fragment>
                                     ))
@@ -422,6 +420,7 @@ function Row<TData>({
     selected,
     visibleColumnIds,
     columnOrder,
+    live,
 }: {
     row: Row<TData>;
     table: TTable<TData>;
@@ -430,10 +429,10 @@ function Row<TData>({
     // REMINDER: for memoization - triggers re-render when columns change
     visibleColumnIds: string;
     columnOrder: string;
+    live?: boolean;
 }) {
     // REMINDER: rerender the row when live mode is toggled - used to opacity the row
     // via the `getRowClassName` prop - but for some reasons it wil render the row on data fetch
-    useFilterState((s) => s.live);
     return (
         <TableRow
             id={row.id}
@@ -478,5 +477,6 @@ const MemoizedRow = React.memo(
         prev.row.id === next.row.id &&
         prev.selected === next.selected &&
         prev.visibleColumnIds === next.visibleColumnIds &&
-        prev.columnOrder === next.columnOrder,
+        prev.columnOrder === next.columnOrder &&
+        prev.live === next.live,
 ) as typeof Row;
