@@ -6,7 +6,7 @@ export const inDateRange: FilterFn<unknown> = (row, columnId, value) => {
     const date = new Date(row.getValue(columnId));
     const [start, end] = value as Date[];
 
-    if (isNaN(date.getTime())) return false;
+    if (Number.isNaN(date.getTime())) return false;
 
     // if no end date, check if it's the same day
     if (!end) return isSameDay(date, start);

@@ -1,5 +1,5 @@
 import { getSchemaDefaults } from './serialization';
-import type { InferSchemaType, Schema, SchemaDefinition } from './types';
+import type { Schema, SchemaDefinition } from './types';
 
 /**
  * Schema System for BYOS (Bring Your Own Store)
