@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils';
 
 function Label({ className, ...props }: React.ComponentProps<'label'>) {
     return (
+        // biome-ignore lint/a11y/noLabelWithoutControl: Label is meant to be used alongside form controls
         <label
             data-slot="label"
             className={cn(

@@ -69,7 +69,7 @@ function number(): FieldBuilder<number | null> {
         parse: (str) => {
             if (str === '') return null;
             const num = parseInt(str, 10);
-            return isNaN(num) ? null : num;
+            return Number.isNaN(num) ? null : num;
         },
     });
 }
@@ -100,9 +100,9 @@ function timestamp(): FieldBuilder<Date | null> {
         parse: (str) => {
             if (str === '') return null;
             const time = parseInt(str, 10);
-            if (isNaN(time)) return null;
+            if (Number.isNaN(time)) return null;
             const date = new Date(time);
-            return isNaN(date.getTime()) ? null : date;
+            return Number.isNaN(date.getTime()) ? null : date;
         },
     });
 }

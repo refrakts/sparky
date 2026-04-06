@@ -1,7 +1,7 @@
 'use client';
 
 import { type HTMLMotionProps, motion, useAnimation, useInView } from 'motion/react';
-import { type FC, useEffect, useRef } from 'react';
+import { type FC, useRef } from 'react';
 
 type AnimationType = 'fadeIn' | 'fadeInUp' | 'popIn' | 'shiftInUp' | 'rollIn' | 'whipIn' | 'whipInUp' | 'calmInUp';
 
@@ -196,12 +196,12 @@ const TextAnimate: FC<Props> = ({ text, type = 'whipInUp', ...props }: Props) =>
     //   });
 
     const ref = useRef(null);
-    const isInView = useInView(ref, { once: true });
+    const _isInView = useInView(ref, { once: true });
 
     const letters = Array.from(text);
     const { container, child } = animationVariants[type];
 
-    const ctrls = useAnimation();
+    const _ctrls = useAnimation();
 
     //   useEffect(() => {
     //     if (isInView) {

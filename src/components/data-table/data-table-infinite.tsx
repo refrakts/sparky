@@ -3,7 +3,7 @@
 // REMINDER: React Compiler is not compatible with Tanstack Table v8 https://github.com/TanStack/table/issues/5567
 'use no memo';
 
-import type { FetchNextPageOptions, FetchPreviousPageOptions, RefetchOptions } from '@tanstack/react-query';
+import type { FetchNextPageOptions } from '@tanstack/react-query';
 import type {
     ColumnDef,
     ColumnFiltersState,
@@ -414,13 +414,10 @@ export function DataTableInfinite<TData, TValue>({
  * e.g. DataTableFilterControls, DataTableFilterCommand, DataTableToolbar, DataTableHeader
  */
 
-function Row<TData>({
+function DataTableRow<TData>({
     row,
     table,
     selected,
-    visibleColumnIds,
-    columnOrder,
-    live,
 }: {
     row: Row<TData>;
     table: TTable<TData>;
@@ -472,11 +469,11 @@ function Row<TData>({
 }
 
 const MemoizedRow = React.memo(
-    Row,
+    DataTableRow,
     (prev, next) =>
         prev.row.id === next.row.id &&
         prev.selected === next.selected &&
         prev.visibleColumnIds === next.visibleColumnIds &&
         prev.columnOrder === next.columnOrder &&
         prev.live === next.live,
-) as typeof Row;
+) as typeof DataTableRow;
