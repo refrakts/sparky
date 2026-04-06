@@ -2,6 +2,8 @@
 
 AI-powered Spark blockchain explorer. Ask natural language questions and get dynamically composed dashboards — tables, charts, flow diagrams — rendered from live API data.
 
+Live app: https://sparkyai.space
+
 ## Prerequisites
 
 - **Node.js** 18.18+ (recommended: 20+)
