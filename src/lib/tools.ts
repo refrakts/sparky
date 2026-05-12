@@ -1,3 +1,4 @@
+import { createJsonRenderTransform } from '@json-render/core';
 import {
     gateway,
     generateText,
@@ -968,7 +969,56 @@ export function createDelegateToWriterTool(
         description:
             'Hand off to the writer agent for the user-facing response. Use after gathering all needed data via tools/subagents. After calling this you MUST NOT write any more text or call any more tools — the writer produces the final output.',
         inputSchema: delegateToWriterInputSchema,
-        // Stub — execute is implemented in the next commit.
-        execute: async () => ({ delegated: true as const }),
+        execute: async ({ brief, user_query, on_screen_context, findings }, { abortSignal }) => {
+            const writerPrompt = [
+                `# User question`,
+                user_query,
+                ``,
+                `# Brief from the orchestrator`,
+                brief,
+                ...(on_screen_context ? [``, `# On-screen context`, on_screen_context] : []),
+                ``,
+                `# Findings`,
+                ...findings.flatMap((f) => [`## ${f.source}`, f.data, ``]),
+            ].join('\n');
+
+            try {
+                const result = streamText({
+                    model,
+                    providerOptions,
+                    system: systemPrompt,
+                    prompt: writerPrompt,
+                    abortSignal,
+                    onError: ({ error }) => {
+                        // Mid-stream errors surface to the user via the merged stream
+                        // (json-render transform forwards error chunks); this also
+                        // logs them server-side.
+                        console.error('[delegateToWriter] writer stream error:', error);
+                    },
+                });
+
+                // Pipe writer's text/spec stream through the same json-render transform
+                // the orchestrator uses, then merge into the UI message stream.
+                // `merge` is non-blocking; createUIMessageStream tracks ongoing merges
+                // and keeps the response open until they drain.
+                uiWriter.merge(
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    result.toUIMessageStream().pipeThrough(createJsonRenderTransform()) as any,
+                );
+
+                return { delegated: true as const };
+            } catch (error) {
+                const reason = error instanceof Error ? error.message : String(error);
+                console.error('[delegateToWriter] writer setup failed:', error);
+                uiWriter.write({ type: 'text-start', id: 'writer-error' });
+                uiWriter.write({
+                    type: 'text-delta',
+                    id: 'writer-error',
+                    delta: `⚠ Writer agent failed: ${reason}`,
+                });
+                uiWriter.write({ type: 'text-end', id: 'writer-error' });
+                return { delegated: true as const, error: reason };
+            }
+        },
     });
 }
