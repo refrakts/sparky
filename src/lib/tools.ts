@@ -1,4 +1,16 @@
-import { gateway, generateText, type LanguageModel, rerank, stepCountIs, type Tool, type ToolSet, tool } from 'ai';
+import { createJsonRenderTransform } from '@json-render/core';
+import {
+    gateway,
+    generateText,
+    type LanguageModel,
+    rerank,
+    stepCountIs,
+    streamText,
+    type Tool,
+    type ToolSet,
+    tool,
+    type UIMessageStreamWriter,
+} from 'ai';
 import { map, scrape, search } from 'firecrawl-aisdk';
 import { z } from 'zod';
 import { flashnetFetch, flashnetPost, sparkscanFetch } from './api';
@@ -915,5 +927,98 @@ export function createParallelAnalysisTool(
                 .join('\n\n');
             return textOutput(body);
         }),
+    });
+}
+
+// ─── Writer Delegation ──────────────────────────────────────────────
+
+export const delegateToWriterInputSchema = z.object({
+    brief: z
+        .string()
+        .min(1)
+        .max(500)
+        .describe(
+            'Short directive for the writer — tone, structure, points to emphasize, components to consider. Under 500 chars.',
+        ),
+    user_query: z.string().min(1).describe('The original user question, verbatim.'),
+    on_screen_context: z
+        .string()
+        .optional()
+        .describe('What components/data the user can already see (copy from [Currently displayed on screen: ...]).'),
+    findings: z
+        .array(
+            z.object({
+                source: z
+                    .string()
+                    .min(1)
+                    .describe('Tool or subagent name (e.g. "parallelAnalysis", "getTokenLeaderboard").'),
+                data: z.string().min(1).describe('Full JSON or markdown result from that tool/subagent.'),
+            }),
+        )
+        .min(1)
+        .describe('All gathered data the writer needs. Writer is stateless — anything not here is invisible.'),
+});
+
+export function createDelegateToWriterTool(
+    model: LanguageModel,
+    systemPrompt: string,
+    providerOptions: GenerateTextProviderOptions | undefined,
+    uiWriter: UIMessageStreamWriter,
+) {
+    return tool({
+        description:
+            'Hand off to the writer agent for the user-facing response. Use after gathering all needed data via tools/subagents. After calling this you MUST NOT write any more text or call any more tools — the writer produces the final output.',
+        inputSchema: delegateToWriterInputSchema,
+        execute: async ({ brief, user_query, on_screen_context, findings }, { abortSignal }) => {
+            const writerPrompt = [
+                `# User question`,
+                user_query,
+                ``,
+                `# Brief from the orchestrator`,
+                brief,
+                ...(on_screen_context ? [``, `# On-screen context`, on_screen_context] : []),
+                ``,
+                `# Findings`,
+                ...findings.flatMap((f) => [`## ${f.source}`, f.data, ``]),
+            ].join('\n');
+
+            try {
+                const result = streamText({
+                    model,
+                    providerOptions,
+                    system: systemPrompt,
+                    prompt: writerPrompt,
+                    abortSignal,
+                    onError: ({ error }) => {
+                        // Mid-stream errors surface to the user via the merged stream
+                        // (json-render transform forwards error chunks); this also
+                        // logs them server-side.
+                        console.error('[delegateToWriter] writer stream error:', error);
+                    },
+                });
+
+                // Pipe writer's text/spec stream through the same json-render transform
+                // the orchestrator uses, then merge into the UI message stream.
+                // `merge` is non-blocking; createUIMessageStream tracks ongoing merges
+                // and keeps the response open until they drain.
+                uiWriter.merge(
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    result.toUIMessageStream().pipeThrough(createJsonRenderTransform()) as any,
+                );
+
+                return { delegated: true as const };
+            } catch (error) {
+                const reason = error instanceof Error ? error.message : String(error);
+                console.error('[delegateToWriter] writer setup failed:', error);
+                uiWriter.write({ type: 'text-start', id: 'writer-error' });
+                uiWriter.write({
+                    type: 'text-delta',
+                    id: 'writer-error',
+                    delta: `⚠ Writer agent failed: ${reason}`,
+                });
+                uiWriter.write({ type: 'text-end', id: 'writer-error' });
+                return { delegated: true as const, error: reason };
+            }
+        },
     });
 }

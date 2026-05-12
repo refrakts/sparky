@@ -11,11 +11,12 @@ type ResolvedModel = ReturnType<typeof wrapLanguageModel>;
  * works for any role. Override per role via env vars; the defaults below
  * are the production picks.
  */
-export type ModelRole = 'orchestrator' | 'worker';
+export type ModelRole = 'orchestrator' | 'worker' | 'writer';
 
 const ROLE_MODELS: Record<ModelRole, string> = {
     orchestrator: env.MODEL_ORCHESTRATOR,
     worker: env.MODEL_WORKER,
+    writer: env.MODEL_WRITER,
 };
 
 export function getModelId(role: ModelRole): string {
