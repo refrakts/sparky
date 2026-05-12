@@ -718,6 +718,26 @@ export function createResearchSearchTool({ rerankModelId, sparkSearch, flashnetS
     });
 }
 
+// ─── Subagent step streaming ────────────────────────────────────────
+
+/**
+ * Emitted by deepAnalysis / parallelAnalysis after every internal step
+ * (= one round of tool calls + reasoning inside the subagent). The chat
+ * route forwards these to the UI as `data-subagentStep` parts so users can
+ * see progress while a long subagent is running.
+ */
+export type SubagentStepEvent = {
+    toolCallId: string;
+    /** Present only for parallelAnalysis branches; identifies which subtask. */
+    subtaskId?: string;
+    stepIndex: number;
+    toolCalls: { name: string }[];
+    /** First 160 chars of the step's text output, if any. */
+    summary?: string;
+};
+
+export type SubagentStepEmitter = (event: SubagentStepEvent) => void;
+
 // ─── Deep Analysis Subagent ─────────────────────────────────────────
 
 const ANALYSIS_SYSTEM = `You are a Spark blockchain data analyst with on-chain, web, and documentation research capability. Your tools:
@@ -761,6 +781,7 @@ export function createDeepAnalysisTool(
     model: LanguageModel,
     providerOptions?: GenerateTextProviderOptions,
     extraToolsFactory?: ExtraToolsFactory,
+    emit?: SubagentStepEmitter,
 ) {
     return tool({
         description:
@@ -772,8 +793,9 @@ export function createDeepAnalysisTool(
                     'A clear, self-contained description of the analysis to perform. Include any specific addresses, token names, or parameters.',
                 ),
         }),
-        execute: async ({ task }, { abortSignal }) => {
+        execute: async ({ task }, { toolCallId, abortSignal }) => {
             const extras = await resolveExtras(extraToolsFactory, 'deepAnalysis');
+            let stepIndex = 0;
             const result = await generateText({
                 model,
                 providerOptions,
@@ -788,6 +810,14 @@ export function createDeepAnalysisTool(
                 },
                 stopWhen: stepCountIs(15),
                 abortSignal,
+                onStepFinish: (step) => {
+                    emit?.({
+                        toolCallId,
+                        stepIndex: stepIndex++,
+                        toolCalls: step.toolCalls.map((c) => ({ name: c.toolName })),
+                        summary: step.text ? step.text.slice(0, 160) : undefined,
+                    });
+                },
             });
             return result.text;
         },
@@ -807,6 +837,7 @@ export function createParallelAnalysisTool(
     model: LanguageModel,
     providerOptions?: GenerateTextProviderOptions,
     extraToolsFactory?: ExtraToolsFactory,
+    emit?: SubagentStepEmitter,
 ) {
     return tool({
         description:
@@ -831,12 +862,13 @@ export function createParallelAnalysisTool(
                 .max(6)
                 .describe('Between 2 and 6 independent subtasks to run concurrently.'),
         }),
-        execute: async ({ tasks }, { abortSignal }): Promise<ParallelAnalysisResult[]> => {
+        execute: async ({ tasks }, { toolCallId, abortSignal }): Promise<ParallelAnalysisResult[]> => {
             // Resolve once for the whole fan-out so all subtasks share the
             // same MCP connection (the factory caller is expected to memoize).
             const extras = await resolveExtras(extraToolsFactory, 'parallelAnalysis');
             const settled = await Promise.allSettled(
-                tasks.map(async ({ task }) => {
+                tasks.map(async ({ id, task }) => {
+                    let stepIndex = 0;
                     const result = await generateText({
                         model,
                         providerOptions,
@@ -851,6 +883,15 @@ export function createParallelAnalysisTool(
                         },
                         stopWhen: stepCountIs(10),
                         abortSignal,
+                        onStepFinish: (step) => {
+                            emit?.({
+                                toolCallId,
+                                subtaskId: id,
+                                stepIndex: stepIndex++,
+                                toolCalls: step.toolCalls.map((c) => ({ name: c.toolName })),
+                                summary: step.text ? step.text.slice(0, 160) : undefined,
+                            });
+                        },
                     });
                     return result.text;
                 }),

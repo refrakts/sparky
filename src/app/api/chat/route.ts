@@ -20,6 +20,7 @@ import {
     createParallelAnalysisTool,
     createResearchSearchTool,
     flashnetTools,
+    type SubagentStepEvent,
     sparkscanTools,
 } from '@/lib/tools';
 import type { NetworkSummary } from '@/lib/types';
@@ -141,6 +142,18 @@ function createMcpExtras(opts: { rerankModelId: string }): {
             await Promise.allSettled(clients.map((c) => c?.close()));
         },
     };
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/**
+ * Both `sessionId` (from the request body) and `X-POSTHOG-SESSION-ID` (from
+ * headers) are client-controlled. They become $ai_trace_id / $ai_session_id /
+ * $session_id, so an unvalidated string could poison traces or blow up the
+ * cardinality of PostHog property values. Accept only canonical UUID form;
+ * the caller falls back to crypto.randomUUID() or drops the field otherwise.
+ */
+function asValidUuid(value: unknown): string | undefined {
+    return typeof value === 'string' && value.length === 36 && UUID_RE.test(value) ? value : undefined;
 }
 
 async function fetchNetworkContext(): Promise<string> {
@@ -298,8 +311,10 @@ export async function POST(req: NextRequest) {
         const cookieName = `ph_${env.NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN}_posthog`;
         const cookieValue = req.cookies.get(cookieName)?.value;
         const distinctId = cookieValue ? JSON.parse(cookieValue).distinct_id : undefined;
+        const phSessionId = asValidUuid(req.headers.get('x-posthog-session-id'));
 
-        const { messages, sessionId, clientContext } = await req.json();
+        const { messages, sessionId: rawSessionId, clientContext } = await req.json();
+        const sessionId = asValidUuid(rawSessionId);
 
         const userQuery =
             messages.at(-1)?.parts?.find((p: { type: string }) => p.type === 'text')?.text ?? messages.at(-1)?.content;
@@ -322,12 +337,18 @@ export async function POST(req: NextRequest) {
 
         const model = await getModel('orchestrator');
         const posthog = posthogClient();
-        const traceId = crypto.randomUUID();
+        // Use the client's chat session id as the trace id so every turn in a
+        // conversation lands inside the same trace in LLM Observability.
+        const traceId = sessionId ?? crypto.randomUUID();
         const baseProperties = {
             ...(sessionId ? { $ai_session_id: sessionId } : {}),
+            ...(phSessionId ? { $session_id: phSessionId } : {}),
         };
 
-        // Emit an explicit trace event so PostHog names and groups the trace
+        // Emit a $ai_trace root for this turn so PostHog names/groups the
+        // conversation in LLM Observability. Re-emitting per turn with the
+        // same $ai_trace_id is intentional — it keeps the trace named by the
+        // latest user query while grouping every generation under one trace.
         const queryPreview = userQuery ? String(userQuery).slice(0, 100) : 'chat';
         posthog.capture({
             distinctId: distinctId ?? 'anonymous',
@@ -392,39 +413,46 @@ export async function POST(req: NextRequest) {
             await posthog.shutdown();
         };
 
-        const deepAnalysis = createDeepAnalysisTool(
-            tracedDeepAnalysisModel,
-            workerProviderOptions,
-            mcpExtras.getExtras,
-        );
-        const parallelAnalysis = createParallelAnalysisTool(
-            tracedParallelAnalysisModel,
-            workerProviderOptions,
-            mcpExtras.getExtras,
-        );
-
         try {
-            const result = streamText({
-                model: tracedModel,
-                system: fullSystem,
-                messages: modelMessages,
-                tools: {
-                    ...sparkscanTools,
-                    ...flashnetTools,
-                    deepAnalysis,
-                    parallelAnalysis,
-                },
-                stopWhen: stepCountIs(5),
-                onFinish: cleanup,
-                onError: ({ error }) => {
-                    console.error('[chat] stream error:', error);
-                    void cleanup();
-                },
-            });
-
-            // Pipe through json-render transform to classify text vs JSONL patches
+            // Pipe through json-render transform to classify text vs JSONL patches.
+            // Tools are constructed inside execute() so they can call writer.write()
+            // to emit `data-subagentStep` parts while their internal loop runs.
             const stream = createUIMessageStream({
                 execute: async ({ writer }) => {
+                    const emitStep = (event: SubagentStepEvent) => {
+                        writer.write({ type: 'data-subagentStep', data: event });
+                    };
+                    const deepAnalysis = createDeepAnalysisTool(
+                        tracedDeepAnalysisModel,
+                        workerProviderOptions,
+                        mcpExtras.getExtras,
+                        emitStep,
+                    );
+                    const parallelAnalysis = createParallelAnalysisTool(
+                        tracedParallelAnalysisModel,
+                        workerProviderOptions,
+                        mcpExtras.getExtras,
+                        emitStep,
+                    );
+
+                    const result = streamText({
+                        model: tracedModel,
+                        system: fullSystem,
+                        messages: modelMessages,
+                        tools: {
+                            ...sparkscanTools,
+                            ...flashnetTools,
+                            deepAnalysis,
+                            parallelAnalysis,
+                        },
+                        stopWhen: stepCountIs(5),
+                        onFinish: cleanup,
+                        onError: ({ error }) => {
+                            console.error('[chat] stream error:', error);
+                            void cleanup();
+                        },
+                    });
+
                     writer.merge(
                         // eslint-disable-next-line @typescript-eslint/no-explicit-any
                         result.toUIMessageStream().pipeThrough(createJsonRenderTransform()) as any,
