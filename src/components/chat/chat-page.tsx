@@ -275,7 +275,7 @@ function ChatPageInner() {
                             </div>
 
                             {/* Panel content */}
-                            <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
+                            <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-background/60 backdrop-blur-md">
                                 {/* Floating close button */}
                                 <div className="absolute right-3 top-3 z-20">
                                     <Button
