@@ -582,6 +582,30 @@ function itemToRerankDoc(item: ResearchItem): string {
     return `${item.title}\n${item.text}`.trim();
 }
 
+/**
+ * Pick up to `topN` items, round-robin across sources, so a long Firecrawl
+ * result list can't crowd out the docs hits. Used as the rerank fallback —
+ * the rerank path itself surfaces docs hits naturally via scoring.
+ */
+function balancedTopN(items: ResearchItem[], topN: number): ResearchItem[] {
+    if (items.length <= topN) return items;
+    const groups = new Map<string, ResearchItem[]>();
+    for (const item of items) {
+        const list = groups.get(item.source) ?? [];
+        list.push(item);
+        groups.set(item.source, list);
+    }
+    const lists = Array.from(groups.values());
+    const result: ResearchItem[] = [];
+    let i = 0;
+    while (result.length < topN && lists.some((l) => l.length > 0)) {
+        const next = lists[i % lists.length]?.shift();
+        if (next) result.push(next);
+        i++;
+    }
+    return result;
+}
+
 export function createResearchSearchTool({ rerankModelId, sparkSearch, flashnetSearch }: ResearchSearchOptions) {
     return tool({
         description:
@@ -662,10 +686,11 @@ export function createResearchSearchTool({ rerankModelId, sparkSearch, flashnetS
             } catch (error) {
                 // Rerank is the last step — if the gateway is flaky or the
                 // model id is misconfigured we still have usable items from
-                // the search fan-out. Degrade to an unreranked top-N rather
-                // than throwing the whole research call away.
-                console.error('[researchSearch] rerank failed, returning unreranked top-N:', error);
-                return { items: items.slice(0, topN), reranked: false };
+                // the search fan-out. Degrade to a source-balanced top-N
+                // (round-robin) so a 10-item Firecrawl batch doesn't crowd
+                // out the docs hits when the slice gets taken.
+                console.error('[researchSearch] rerank failed, returning unreranked balanced top-N:', error);
+                return { items: balancedTopN(items, topN), reranked: false };
             }
         },
     });

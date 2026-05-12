@@ -25,34 +25,84 @@ import type { NetworkSummary } from '@/lib/types';
 
 export const maxDuration = 60;
 
+// Per-stage MCP timeouts. The route's overall maxDuration is 60s; a slow
+// docs server should not consume more than a small fraction of that before
+// the subagent gives up on it and proceeds with the healthy sources.
+const MCP_CONNECT_TIMEOUT_MS = 5_000;
+const MCP_TOOLS_TIMEOUT_MS = 5_000;
+
 /**
- * Connect to an MCP docs server. Failures are swallowed — the worker
- * subagent still has the other research backends (Firecrawl + the other MCP)
- * so we don't want one server outage to break chat entirely.
+ * Race a promise against a timeout. On timeout, rejects with a labeled
+ * Error. `onLateResolve` runs if the underlying promise eventually settles
+ * fulfilled after the timeout fired, so callers can clean up orphan
+ * resources (e.g. close an MCP client that connected too late).
+ */
+function withTimeout<T>(
+    promise: Promise<T>,
+    ms: number,
+    label: string,
+    onLateResolve?: (value: T) => void,
+): Promise<T> {
+    let timedOut = false;
+    const timer = new Promise<never>((_, reject) => {
+        setTimeout(() => {
+            timedOut = true;
+            reject(new Error(`${label} timed out after ${ms}ms`));
+        }, ms);
+    });
+    promise.then(
+        (value) => {
+            if (timedOut && onLateResolve) {
+                try {
+                    onLateResolve(value);
+                } catch (error) {
+                    console.error(`[mcp] late-resolve cleanup for ${label} threw:`, error);
+                }
+            }
+        },
+        () => {
+            /* original rejection — withTimeout already routed it via race */
+        },
+    );
+    return Promise.race([promise, timer]);
+}
+
+/**
+ * Connect to an MCP docs server with a timeout. If the connect succeeds
+ * after we've already given up, the late client is closed to avoid leaking
+ * a socket. All failure modes (timeout, network, server error) log + return
+ * null so the worker still has the other backends.
  */
 async function connectMcp(url: string, label: string): Promise<MCPClient | null> {
     try {
-        return await createMCPClient({
-            transport: { type: 'http', url },
-            clientName: 'sparky',
-        });
+        return await withTimeout(
+            createMCPClient({ transport: { type: 'http', url }, clientName: 'sparky' }),
+            MCP_CONNECT_TIMEOUT_MS,
+            `mcp:${label} connect`,
+            (client) => {
+                console.warn(`[mcp:${label}] connected after timeout — closing orphan client`);
+                void client.close().catch(() => {});
+            },
+        );
     } catch (error) {
-        console.error(`[mcp:${label}] failed to connect to ${url}:`, error);
+        console.error(`[mcp:${label}] connect failed (${url}):`, error);
         return null;
     }
 }
 
 /**
- * Fetch the tool definitions from an MCP client. Tool discovery is a second
- * network step after `createMCPClient` and can fail independently — wrap it
- * so a slow/broken docs server doesn't 500 the whole chat.
+ * Fetch tool definitions from an MCP client, with a timeout. Tool discovery
+ * is a second network step after `createMCPClient` and can fail
+ * independently; a slow tools/list can't be allowed to delay the whole
+ * subagent setup.
  */
 async function safeTools(client: MCPClient | null, label: string): Promise<Record<string, unknown>> {
     if (!client) return {};
     try {
-        return (await client.tools()) as Record<string, unknown>;
+        const tools = await withTimeout(client.tools(), MCP_TOOLS_TIMEOUT_MS, `mcp:${label} tools/list`);
+        return tools as Record<string, unknown>;
     } catch (error) {
-        console.error(`[mcp:${label}] failed to list tools:`, error);
+        console.error(`[mcp:${label}] tools/list failed:`, error);
         return {};
     }
 }
@@ -64,6 +114,15 @@ async function safeTools(client: MCPClient | null, label: string): Promise<Recor
  * docs MCP latency. `close()` is idempotent and a no-op if nothing was ever
  * opened.
  */
+async function openSource(
+    url: string,
+    label: string,
+): Promise<{ client: MCPClient | null; tools: Record<string, unknown> }> {
+    const client = await connectMcp(url, label);
+    const tools = await safeTools(client, label);
+    return { client, tools };
+}
+
 function createMcpExtras(opts: { rerankModelId: string }): {
     getExtras: () => Promise<ToolSet>;
     close: () => Promise<void>;
@@ -76,17 +135,17 @@ function createMcpExtras(opts: { rerankModelId: string }): {
     const open = async (): Promise<ToolSet> => {
         if (closed) return {};
         opened = true;
-        const [sparkMcp, flashnetMcp] = await Promise.all([
-            connectMcp(env.SPARK_MCP_URL, 'spark'),
-            connectMcp(env.FLASHNET_MCP_URL, 'flashnet'),
+        // Per-source pipelines run independently so a hung Spark MCP can't
+        // block Flashnet (or vice versa). Each pipeline is internally
+        // bounded by per-stage timeouts inside connectMcp / safeTools, so
+        // the whole open() is bounded even if both sources are slow.
+        const [sparkResult, flashnetResult] = await Promise.all([
+            openSource(env.SPARK_MCP_URL, 'spark'),
+            openSource(env.FLASHNET_MCP_URL, 'flashnet'),
         ]);
-        clients = [sparkMcp, flashnetMcp];
-        const [sparkToolSet, flashnetToolSet] = await Promise.all([
-            safeTools(sparkMcp, 'spark'),
-            safeTools(flashnetMcp, 'flashnet'),
-        ]);
-        const { search_spark: sparkSearchTool, ...sparkRest } = sparkToolSet;
-        const { search_flashnet: flashnetSearchTool, ...flashnetRest } = flashnetToolSet;
+        clients = [sparkResult.client, flashnetResult.client];
+        const { search_spark: sparkSearchTool, ...sparkRest } = sparkResult.tools;
+        const { search_flashnet: flashnetSearchTool, ...flashnetRest } = flashnetResult.tools;
         const researchSearch = createResearchSearchTool({
             rerankModelId: opts.rerankModelId,
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
