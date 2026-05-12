@@ -24,7 +24,7 @@ function AiSuggestedActions({ suggestions, onSelect, className }: AiSuggestedAct
                     type="button"
                     key={suggestion.prompt}
                     onClick={() => onSelect?.(suggestion.prompt)}
-                    className="whitespace-nowrap rounded-full border border-border/40 px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                    className="whitespace-nowrap rounded-full border border-foreground/20 px-3 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                 >
                     {suggestion.label}
                 </button>

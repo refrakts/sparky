@@ -103,7 +103,7 @@ export function DataTable<T extends Record<string, unknown>>({
             <BackgroundImageTexture
                 variant="fabric-of-squares"
                 opacity={0.03}
-                className="overflow-x-auto rounded-md border"
+                className="overflow-x-auto rounded-md border bg-card"
             >
                 <Table className="w-full min-w-[600px]">
                     <TableHeader>

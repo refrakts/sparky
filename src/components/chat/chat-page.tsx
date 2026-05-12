@@ -152,7 +152,7 @@ function ChatPageInner() {
     if (!hasConversation) {
         return (
             <LayoutGroup>
-                <AiChat status={mappedStatus} className="min-h-0 flex-1">
+                <AiChat status={mappedStatus} className="min-h-0 flex-1 bg-transparent">
                     <AiChatBody className="flex items-center justify-center">
                         <div className="w-full max-w-2xl space-y-6 px-6">
                             <TextAnimate
@@ -185,7 +185,7 @@ function ChatPageInner() {
                     className={cn('flex min-h-0 flex-col', !isDragging && 'transition-[flex] duration-300 ease-out')}
                     style={{ flex: '1 1 0%' }}
                 >
-                    <AiChat status={mappedStatus} className="min-h-0 flex-1">
+                    <AiChat status={mappedStatus} className="min-h-0 flex-1 bg-transparent">
                         <AiChatBody>
                             <AiMessages autoScroll>
                                 {/* Fast path results */}
@@ -233,7 +233,7 @@ function ChatPageInner() {
                             </AiMessages>
                         </AiChatBody>
 
-                        <AiChatFooter className="px-4 py-3">
+                        <AiChatFooter className="bg-transparent px-4 py-3">
                             <motion.div
                                 layoutId="chat-input"
                                 layout
@@ -280,7 +280,7 @@ function ChatPageInner() {
                             </div>
 
                             {/* Panel content */}
-                            <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
+                            <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-background/60 backdrop-blur-md">
                                 {/* Floating close button */}
                                 <div className="absolute right-3 top-3 z-20">
                                     <Button

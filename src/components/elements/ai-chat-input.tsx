@@ -109,7 +109,7 @@ export function AiChatInput({
                 </div>
             )}
 
-            <div className="flex items-end gap-2 rounded-lg border bg-background p-1.5 focus-within:ring-1 focus-within:ring-ring">
+            <div className="flex items-end gap-2 rounded-lg border bg-background/70 p-1.5 backdrop-blur-md focus-within:ring-1 focus-within:ring-ring">
                 {allowAttachments && (
                     <>
                         <input
