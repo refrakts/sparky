@@ -340,6 +340,12 @@ export async function POST(req: NextRequest) {
         // Use the client's chat session id as the trace id so every turn in a
         // conversation lands inside the same trace in LLM Observability.
         const traceId = sessionId ?? crypto.randomUUID();
+        // Match @posthog/ai's upstream fallback (captureAiGeneration uses
+        // `distinctId ?? traceId`). Without the same fallback here, the manual
+        // $ai_trace lands on a different Person than the $ai_generation events
+        // whenever the PostHog cookie is missing, and PostHog's trace view
+        // shows "No top-level trace event".
+        const effectiveDistinctId = distinctId ?? traceId;
         const baseProperties = {
             ...(sessionId ? { $ai_session_id: sessionId } : {}),
             ...(phSessionId ? { $session_id: phSessionId } : {}),
@@ -351,7 +357,7 @@ export async function POST(req: NextRequest) {
         // latest user query while grouping every generation under one trace.
         const queryPreview = userQuery ? String(userQuery).slice(0, 100) : 'chat';
         posthog.capture({
-            distinctId: distinctId ?? 'anonymous',
+            distinctId: effectiveDistinctId,
             event: '$ai_trace',
             properties: {
                 $ai_trace_id: traceId,
@@ -361,7 +367,7 @@ export async function POST(req: NextRequest) {
         });
 
         const tracedModel = withTracing(model, posthog, {
-            posthogDistinctId: distinctId,
+            posthogDistinctId: effectiveDistinctId,
             posthogTraceId: traceId,
             posthogProperties: {
                 $ai_span_name: 'main-agent',
@@ -380,7 +386,7 @@ export async function POST(req: NextRequest) {
         // their spans while sharing the parent traceId.
         const workerModel = await getModel('worker');
         const tracedDeepAnalysisModel = withTracing(workerModel, posthog, {
-            posthogDistinctId: distinctId,
+            posthogDistinctId: effectiveDistinctId,
             posthogTraceId: traceId,
             posthogProperties: {
                 $ai_span_name: 'deep-analysis-subagent',
@@ -388,7 +394,7 @@ export async function POST(req: NextRequest) {
             },
         });
         const tracedParallelAnalysisModel = withTracing(workerModel, posthog, {
-            posthogDistinctId: distinctId,
+            posthogDistinctId: effectiveDistinctId,
             posthogTraceId: traceId,
             posthogProperties: {
                 $ai_span_name: 'parallel-analysis-subagent',
