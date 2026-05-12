@@ -1,6 +1,7 @@
 import { generateText, type LanguageModel, stepCountIs, tool } from 'ai';
+import { map, scrape, search } from 'firecrawl-aisdk';
 import { z } from 'zod';
-import { flashnetFetch, sparkscanFetch } from './api';
+import { flashnetFetch, flashnetPost, sparkscanFetch } from './api';
 import { formatUsd } from './formatters';
 import type {
     AddressSummaryData,
@@ -20,6 +21,8 @@ import type {
     Transaction,
     WalletLeaderboard,
 } from './types';
+
+type GenerateTextProviderOptions = Parameters<typeof generateText>[0]['providerOptions'];
 
 /**
  * Summarize helpers — create compact text summaries for the LLM.
@@ -456,19 +459,11 @@ export const flashnetTools = {
             assetBAmount: z.string().describe('Amount of asset B to add'),
         }),
         execute: async ({ poolId, assetAAmount, assetBAmount }) => {
-            const res = await fetch(
-                new URL(
-                    '/v1/liquidity/add/simulate',
-                    process.env.FLASHNET_API_URL || 'https://api.flashnet.xyz',
-                ).toString(),
-                {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ poolId, assetAAmount, assetBAmount }),
-                },
-            );
-            if (!res.ok) throw new Error(`Flashnet API error: ${res.status} ${res.statusText}`);
-            return res.json() as Promise<FlashnetSimulateAddLiquidityResponse>;
+            return flashnetPost<FlashnetSimulateAddLiquidityResponse>('/v1/liquidity/add/simulate', {
+                poolId,
+                assetAAmount,
+                assetBAmount,
+            });
         },
         toModelOutput: safeModelOutput(async ({ output }) => {
             const data = output as FlashnetSimulateAddLiquidityResponse;
@@ -487,19 +482,11 @@ export const flashnetTools = {
             lpTokensToRemove: z.string().describe('Number of LP tokens to burn'),
         }),
         execute: async ({ poolId, providerPublicKey, lpTokensToRemove }) => {
-            const res = await fetch(
-                new URL(
-                    '/v1/liquidity/remove/simulate',
-                    process.env.FLASHNET_API_URL || 'https://api.flashnet.xyz',
-                ).toString(),
-                {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ poolId, providerPublicKey, lpTokensToRemove }),
-                },
-            );
-            if (!res.ok) throw new Error(`Flashnet API error: ${res.status} ${res.statusText}`);
-            return res.json() as Promise<FlashnetSimulateRemoveLiquidityResponse>;
+            return flashnetPost<FlashnetSimulateRemoveLiquidityResponse>('/v1/liquidity/remove/simulate', {
+                poolId,
+                providerPublicKey,
+                lpTokensToRemove,
+            });
         },
         toModelOutput: safeModelOutput(async ({ output }) => {
             const data = output as FlashnetSimulateRemoveLiquidityResponse;
@@ -530,12 +517,14 @@ function withFullOutput<T extends Record<string, any>>(tools: T): T {
 
 // ─── Deep Analysis Subagent ─────────────────────────────────────────
 
-const ANALYSIS_SYSTEM = `You are a Spark blockchain data analyst. You have tools to query on-chain data.
+const ANALYSIS_SYSTEM = `You are a Spark blockchain data analyst with web research capability. You have tools to query on-chain data (Sparkscan, Flashnet) AND web research tools (Firecrawl: search, scrape, map).
 
 Your job: complete the analytical task by calling as many tools as needed, then write a structured summary.
 
 Guidelines:
 - Call tools to gather all the data you need before writing your analysis.
+- Use \`search\` to find web sources, \`scrape\` to extract content from a known URL, and \`map\` to discover URLs on a domain. Combine web findings with on-chain metrics when the question benefits from off-chain context (project descriptions, news, team info, recent events).
+- Cite source URLs when you reference web content.
 - Compute derived metrics: ratios, percentages, distributions, comparisons.
 - Format numbers readably: $10.5M, 177K accounts, 3,984 txs.
 - Structure your final response with **bold** key findings, bullet lists, and clear sections.
@@ -543,10 +532,10 @@ Guidelines:
 - You can ONLY use tools and return text. You CANNOT render UI components.
 - Always include full identifiers (addresses, tx IDs) in your response — never truncate.`;
 
-export function createDeepAnalysisTool(model: LanguageModel) {
+export function createDeepAnalysisTool(model: LanguageModel, providerOptions?: GenerateTextProviderOptions) {
     return tool({
         description:
-            'Delegate a complex analytical task to a research subagent. Use this for questions that require cross-referencing multiple data sources, comparing entities, analyzing patterns over time, or producing detailed reports. NOT for simple lookups or displaying a single component.',
+            'Delegate a complex analytical task to a research subagent. Use this for a SINGLE-ENTITY deep dive that needs cross-referencing multiple data sources, web research, or analyzing patterns over time. For multi-entity comparison or aggregation, use parallelAnalysis instead.',
         inputSchema: z.object({
             task: z
                 .string()
@@ -557,11 +546,15 @@ export function createDeepAnalysisTool(model: LanguageModel) {
         execute: async ({ task }, { abortSignal }) => {
             const result = await generateText({
                 model,
+                providerOptions,
                 system: ANALYSIS_SYSTEM,
                 prompt: task,
                 tools: {
                     ...withFullOutput(sparkscanTools),
                     ...withFullOutput(flashnetTools),
+                    search,
+                    scrape,
+                    map,
                 },
                 stopWhen: stepCountIs(15),
                 abortSignal,
@@ -572,6 +565,77 @@ export function createDeepAnalysisTool(model: LanguageModel) {
             const text = output as string;
             // Truncate if very long — the main agent only needs the summary
             return textOutput(text.length > 3000 ? `${text.slice(0, 3000)}…` : text);
+        }),
+    });
+}
+
+// ─── Parallel Analysis Subagents (fan-out) ──────────────────────────
+
+type ParallelAnalysisResult = { id: string; text: string; ok: boolean };
+
+export function createParallelAnalysisTool(model: LanguageModel, providerOptions?: GenerateTextProviderOptions) {
+    return tool({
+        description:
+            'Run multiple independent analyses in parallel, one subagent per task. Use when the user asks to COMPARE or AGGREGATE across N distinct entities (e.g. "compare these 3 tokens", "rank these wallets by activity"). Each task should be self-contained and analyzable independently. For a single-entity deep dive, use deepAnalysis instead.',
+        inputSchema: z.object({
+            tasks: z
+                .array(
+                    z.object({
+                        id: z
+                            .string()
+                            .describe(
+                                'Short identifier for this subtask (e.g. token ticker, address prefix, or label) — used to attribute results.',
+                            ),
+                        task: z
+                            .string()
+                            .describe(
+                                'A clear, self-contained description of the analysis for this entity. Include the full identifier (address, token name, etc.).',
+                            ),
+                    }),
+                )
+                .min(2)
+                .max(6)
+                .describe('Between 2 and 6 independent subtasks to run concurrently.'),
+        }),
+        execute: async ({ tasks }, { abortSignal }): Promise<ParallelAnalysisResult[]> => {
+            const settled = await Promise.allSettled(
+                tasks.map(async ({ task }) => {
+                    const result = await generateText({
+                        model,
+                        providerOptions,
+                        system: ANALYSIS_SYSTEM,
+                        prompt: task,
+                        tools: {
+                            ...withFullOutput(sparkscanTools),
+                            ...withFullOutput(flashnetTools),
+                            search,
+                            scrape,
+                            map,
+                        },
+                        stopWhen: stepCountIs(10),
+                        abortSignal,
+                    });
+                    return result.text;
+                }),
+            );
+            return settled.map((r, i) => {
+                const id = tasks[i].id;
+                if (r.status === 'fulfilled') return { id, text: r.value, ok: true };
+                const reason = r.reason instanceof Error ? r.reason.message : String(r.reason);
+                return { id, text: `Subagent failed: ${reason}`, ok: false };
+            });
+        },
+        toModelOutput: safeModelOutput(async ({ output }) => {
+            const items = output as ParallelAnalysisResult[];
+            const PER_ITEM_LIMIT = 1500;
+            const body = items
+                .map((i) => {
+                    const head = `## ${i.id}${i.ok ? '' : ' (failed)'}`;
+                    const text = i.text.length > PER_ITEM_LIMIT ? `${i.text.slice(0, PER_ITEM_LIMIT)}…` : i.text;
+                    return `${head}\n${text}`;
+                })
+                .join('\n\n');
+            return textOutput(body);
         }),
     });
 }

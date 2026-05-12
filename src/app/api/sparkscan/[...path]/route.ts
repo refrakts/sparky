@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from 'next/server';
+import { env } from '@/env';
 
-const SPARKSCAN_API_URL = process.env.SPARKSCAN_API_URL || 'https://api.sparkscan.io';
+const SPARKSCAN_API_URL = env.SPARKSCAN_API_URL;
 
 const NETWORK = 'MAINNET' as const;
 

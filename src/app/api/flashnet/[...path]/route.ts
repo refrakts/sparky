@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from 'next/server';
+import { env } from '@/env';
 
-const FLASHNET_API_URL = process.env.FLASHNET_API_URL || 'https://api.flashnet.xyz';
+const FLASHNET_API_URL = env.FLASHNET_API_URL;
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {
     const { path } = await params;

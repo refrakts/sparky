@@ -4,45 +4,16 @@ import {
     convertToModelMessages,
     createUIMessageStream,
     createUIMessageStreamResponse,
-    gateway,
-    type LanguageModelMiddleware,
     stepCountIs,
     streamText,
-    wrapLanguageModel,
 } from 'ai';
 import type { NextRequest } from 'next/server';
+import { env } from '@/env';
 import { sparkscanFetch } from '@/lib/api';
+import { getModel, getProviderOptions } from '@/lib/models';
 import posthogClient from '@/lib/posthog';
-import { createDeepAnalysisTool, flashnetTools, sparkscanTools } from '@/lib/tools';
+import { createDeepAnalysisTool, createParallelAnalysisTool, flashnetTools, sparkscanTools } from '@/lib/tools';
 import type { NetworkSummary } from '@/lib/types';
-
-async function getDevToolsMiddleware(): Promise<LanguageModelMiddleware | undefined> {
-    if (process.env.NODE_ENV !== 'development') return undefined;
-    try {
-        const { devToolsMiddleware } = await import('@ai-sdk/devtools');
-        return devToolsMiddleware();
-    } catch {
-        return undefined;
-    }
-}
-
-let modelPromise: ReturnType<typeof createModel> | null = null;
-
-async function createModel() {
-    const middleware = await getDevToolsMiddleware();
-    if (middleware) {
-        return wrapLanguageModel({
-            model: gateway('moonshotai/kimi-k2.5'),
-            middleware,
-        });
-    }
-    return gateway('moonshotai/kimi-k2.5');
-}
-
-function getModel() {
-    if (!modelPromise) modelPromise = createModel();
-    return modelPromise;
-}
 
 export const maxDuration = 60;
 
@@ -144,17 +115,23 @@ Tools are for when you need raw data to answer a question, compute something, or
 - If on-screen context already has the answer, do NOT call any tools.
 - Never call the same tool twice with different parameters hoping for better results.
 
-## Deep Analysis (Subagent)
+## Subagent Delegation
 
-For complex **analytical** questions that need **3+ tool calls** or cross-referencing multiple data sources, delegate to \`deepAnalysis\` instead of calling tools yourself. Examples:
-- "Compare the top 5 tokens by holder concentration"
-- "Analyze this address's trading patterns over time"
-- "What's the relationship between these two wallets?"
-- "Give me a full breakdown of Flashnet pool performance"
+For complex **analytical** questions that need **3+ tool calls** or cross-referencing multiple data sources, delegate to a subagent. Pick the right one:
 
-The subagent runs autonomously, calls as many tools as needed, and returns a structured analysis. You then relay its findings to the user (you may add components alongside).
+- \`deepAnalysis\` — **single-entity** drill-down. Use when the question is about ONE address/token/pool/wallet and needs multiple tool calls to fully answer. Examples:
+  - "Analyze this address's trading patterns over time"
+  - "Give me a full breakdown of Flashnet pool X"
+  - "Why did token X's holder count change last week?"
 
-**Do NOT use deepAnalysis when:**
+- \`parallelAnalysis\` — **cross-entity** comparison or aggregation across 2-6 distinct entities, each analyzed concurrently by its own subagent. Use when the question is about MULTIPLE entities of the same kind. Each subtask must be self-contained (include the full identifier). Examples:
+  - "Compare the top 5 tokens by holder concentration"
+  - "Rank these 3 wallets by trading volume"
+  - "Audit these 4 pools for impermanent loss exposure"
+
+Each subagent runs autonomously, calls as many tools as needed, and returns a structured analysis. Subagents have access to Sparkscan + Flashnet tools AND web-research tools (search, scrape, map) — so they can combine on-chain data with off-chain context (project info, news, team, recent events). You then relay findings to the user (you may add components alongside).
+
+**Do NOT use a subagent when:**
 - A UI component can handle it (e.g., "show me latest transactions" → just render LatestTransactions)
 - A simple 1-2 tool call suffices
 - The user is asking to display/show something (use components instead)
@@ -192,7 +169,7 @@ Keep each under 50 characters. Always use **full** identifiers (addresses, tx ID
 
 export async function POST(req: NextRequest) {
     try {
-        const cookieName = `ph_${process.env.NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN}_posthog`;
+        const cookieName = `ph_${env.NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN}_posthog`;
         const cookieValue = req.cookies.get(cookieName)?.value;
         const distinctId = cookieValue ? JSON.parse(cookieValue).distinct_id : undefined;
 
@@ -217,7 +194,7 @@ export async function POST(req: NextRequest) {
             contextHints.push(`[Currently displayed on screen:\n${clientContext.onScreen}\n]`);
         }
 
-        const model = await getModel();
+        const model = await getModel('orchestrator');
         const posthog = posthogClient();
         const traceId = crypto.randomUUID();
         const baseProperties = {
@@ -251,10 +228,11 @@ export async function POST(req: NextRequest) {
                 ? `${systemPrompt}\n\n## Current Client State\n${contextHints.join('\n')}`
                 : systemPrompt;
 
-        // Subagent uses a separately traced model so its generations
-        // appear under the same PostHog trace (shared traceId) for cost tracking.
-        // $ai_span_name distinguishes subagent generations from the main agent.
-        const tracedSubagentModel = withTracing(gateway('google/gemini-2.5-flash-lite'), posthog, {
+        // Worker model serves both deepAnalysis and parallelAnalysis subagents.
+        // Each subagent type gets its own withTracing wrap so PostHog distinguishes
+        // their spans while sharing the parent traceId.
+        const workerModel = await getModel('worker');
+        const tracedDeepAnalysisModel = withTracing(workerModel, posthog, {
             posthogDistinctId: distinctId,
             posthogTraceId: traceId,
             posthogProperties: {
@@ -262,7 +240,17 @@ export async function POST(req: NextRequest) {
                 ...baseProperties,
             },
         });
-        const deepAnalysis = createDeepAnalysisTool(tracedSubagentModel);
+        const tracedParallelAnalysisModel = withTracing(workerModel, posthog, {
+            posthogDistinctId: distinctId,
+            posthogTraceId: traceId,
+            posthogProperties: {
+                $ai_span_name: 'parallel-analysis-subagent',
+                ...baseProperties,
+            },
+        });
+        const workerProviderOptions = getProviderOptions('worker');
+        const deepAnalysis = createDeepAnalysisTool(tracedDeepAnalysisModel, workerProviderOptions);
+        const parallelAnalysis = createParallelAnalysisTool(tracedParallelAnalysisModel, workerProviderOptions);
 
         const result = streamText({
             model: tracedModel,
@@ -272,6 +260,7 @@ export async function POST(req: NextRequest) {
                 ...sparkscanTools,
                 ...flashnetTools,
                 deepAnalysis,
+                parallelAnalysis,
             },
             stopWhen: stepCountIs(5),
             onFinish: async () => {
