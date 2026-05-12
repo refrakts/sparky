@@ -2,7 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
-import { sparkscanProxyFetch } from '@/lib/api';
+import { sparkscanProxyFetch } from '@/lib/api-client';
 import { formatUsd } from '@/lib/formatters';
 import type { AddressTransaction, PaginatedResponse } from '@/lib/types';
 import { useReportData } from '@/lib/use-report-data';

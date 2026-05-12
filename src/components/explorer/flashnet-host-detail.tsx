@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { flashnetProxyFetch } from '@/lib/api';
+import { flashnetProxyFetch } from '@/lib/api-client';
 import { formatTimeago, truncateAddress } from '@/lib/formatters';
 import type { FlashnetHost } from '@/lib/types';
 import { useReportData } from '@/lib/use-report-data';

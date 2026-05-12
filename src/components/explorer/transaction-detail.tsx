@@ -5,7 +5,7 @@ import { useMemo } from 'react';
 import { AddressCell, StatusBadge, TokenAmountCell, TxidCell, TxTypeBadge } from '@/components/tables/cell-renderers';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { sparkscanProxyFetch } from '@/lib/api';
+import { sparkscanProxyFetch } from '@/lib/api-client';
 import { formatDate, formatSats, formatTimeago, formatUsd, txTypeLabel } from '@/lib/formatters';
 import type { Transaction } from '@/lib/types';
 import { useReportData } from '@/lib/use-report-data';
