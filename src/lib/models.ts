@@ -52,3 +52,21 @@ export function getModel(role: ModelRole): Promise<ResolvedModel> {
     cache.set(role, created);
     return created;
 }
+
+/**
+ * Per-role provider options for `generateText`/`streamText`. Currently maps
+ * WORKER_REASONING_EFFORT → openai.reasoningEffort. Returns undefined when
+ * no overrides apply (callers can pass undefined safely).
+ *
+ * The AI SDK silently drops provider-options keys that don't match the
+ * active provider, so passing `{ openai: ... }` to a Cohere/Google call
+ * is harmless.
+ */
+export function getProviderOptions(
+    role: ModelRole,
+): { openai: { reasoningEffort: 'low' | 'medium' | 'high' } } | undefined {
+    if (role === 'worker' && env.WORKER_REASONING_EFFORT) {
+        return { openai: { reasoningEffort: env.WORKER_REASONING_EFFORT } };
+    }
+    return undefined;
+}

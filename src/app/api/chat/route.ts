@@ -10,7 +10,7 @@ import {
 import type { NextRequest } from 'next/server';
 import { env } from '@/env';
 import { sparkscanFetch } from '@/lib/api';
-import { getModel } from '@/lib/models';
+import { getModel, getProviderOptions } from '@/lib/models';
 import posthogClient from '@/lib/posthog';
 import { createDeepAnalysisTool, createParallelAnalysisTool, flashnetTools, sparkscanTools } from '@/lib/tools';
 import type { NetworkSummary } from '@/lib/types';
@@ -129,7 +129,7 @@ For complex **analytical** questions that need **3+ tool calls** or cross-refere
   - "Rank these 3 wallets by trading volume"
   - "Audit these 4 pools for impermanent loss exposure"
 
-Each subagent runs autonomously, calls as many tools as needed, and returns a structured analysis. You then relay findings to the user (you may add components alongside).
+Each subagent runs autonomously, calls as many tools as needed, and returns a structured analysis. Subagents have access to Sparkscan + Flashnet tools AND web-research tools (search, scrape, map) — so they can combine on-chain data with off-chain context (project info, news, team, recent events). You then relay findings to the user (you may add components alongside).
 
 **Do NOT use a subagent when:**
 - A UI component can handle it (e.g., "show me latest transactions" → just render LatestTransactions)
@@ -248,8 +248,9 @@ export async function POST(req: NextRequest) {
                 ...baseProperties,
             },
         });
-        const deepAnalysis = createDeepAnalysisTool(tracedDeepAnalysisModel);
-        const parallelAnalysis = createParallelAnalysisTool(tracedParallelAnalysisModel);
+        const workerProviderOptions = getProviderOptions('worker');
+        const deepAnalysis = createDeepAnalysisTool(tracedDeepAnalysisModel, workerProviderOptions);
+        const parallelAnalysis = createParallelAnalysisTool(tracedParallelAnalysisModel, workerProviderOptions);
 
         const result = streamText({
             model: tracedModel,

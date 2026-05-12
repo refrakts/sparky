@@ -1,4 +1,5 @@
 import { generateText, type LanguageModel, stepCountIs, tool } from 'ai';
+import { map, scrape, search } from 'firecrawl-aisdk';
 import { z } from 'zod';
 import { flashnetFetch, flashnetPost, sparkscanFetch } from './api';
 import { formatUsd } from './formatters';
@@ -20,6 +21,8 @@ import type {
     Transaction,
     WalletLeaderboard,
 } from './types';
+
+type GenerateTextProviderOptions = Parameters<typeof generateText>[0]['providerOptions'];
 
 /**
  * Summarize helpers — create compact text summaries for the LLM.
@@ -514,12 +517,14 @@ function withFullOutput<T extends Record<string, any>>(tools: T): T {
 
 // ─── Deep Analysis Subagent ─────────────────────────────────────────
 
-const ANALYSIS_SYSTEM = `You are a Spark blockchain data analyst. You have tools to query on-chain data.
+const ANALYSIS_SYSTEM = `You are a Spark blockchain data analyst with web research capability. You have tools to query on-chain data (Sparkscan, Flashnet) AND web research tools (Firecrawl: search, scrape, map).
 
 Your job: complete the analytical task by calling as many tools as needed, then write a structured summary.
 
 Guidelines:
 - Call tools to gather all the data you need before writing your analysis.
+- Use \`search\` to find web sources, \`scrape\` to extract content from a known URL, and \`map\` to discover URLs on a domain. Combine web findings with on-chain metrics when the question benefits from off-chain context (project descriptions, news, team info, recent events).
+- Cite source URLs when you reference web content.
 - Compute derived metrics: ratios, percentages, distributions, comparisons.
 - Format numbers readably: $10.5M, 177K accounts, 3,984 txs.
 - Structure your final response with **bold** key findings, bullet lists, and clear sections.
@@ -527,10 +532,10 @@ Guidelines:
 - You can ONLY use tools and return text. You CANNOT render UI components.
 - Always include full identifiers (addresses, tx IDs) in your response — never truncate.`;
 
-export function createDeepAnalysisTool(model: LanguageModel) {
+export function createDeepAnalysisTool(model: LanguageModel, providerOptions?: GenerateTextProviderOptions) {
     return tool({
         description:
-            'Delegate a complex analytical task to a research subagent. Use this for a SINGLE-ENTITY deep dive that needs cross-referencing multiple data sources or analyzing patterns over time. For multi-entity comparison or aggregation, use parallelAnalysis instead.',
+            'Delegate a complex analytical task to a research subagent. Use this for a SINGLE-ENTITY deep dive that needs cross-referencing multiple data sources, web research, or analyzing patterns over time. For multi-entity comparison or aggregation, use parallelAnalysis instead.',
         inputSchema: z.object({
             task: z
                 .string()
@@ -541,11 +546,15 @@ export function createDeepAnalysisTool(model: LanguageModel) {
         execute: async ({ task }, { abortSignal }) => {
             const result = await generateText({
                 model,
+                providerOptions,
                 system: ANALYSIS_SYSTEM,
                 prompt: task,
                 tools: {
                     ...withFullOutput(sparkscanTools),
                     ...withFullOutput(flashnetTools),
+                    search,
+                    scrape,
+                    map,
                 },
                 stopWhen: stepCountIs(15),
                 abortSignal,
@@ -564,7 +573,7 @@ export function createDeepAnalysisTool(model: LanguageModel) {
 
 type ParallelAnalysisResult = { id: string; text: string; ok: boolean };
 
-export function createParallelAnalysisTool(model: LanguageModel) {
+export function createParallelAnalysisTool(model: LanguageModel, providerOptions?: GenerateTextProviderOptions) {
     return tool({
         description:
             'Run multiple independent analyses in parallel, one subagent per task. Use when the user asks to COMPARE or AGGREGATE across N distinct entities (e.g. "compare these 3 tokens", "rank these wallets by activity"). Each task should be self-contained and analyzable independently. For a single-entity deep dive, use deepAnalysis instead.',
@@ -593,11 +602,15 @@ export function createParallelAnalysisTool(model: LanguageModel) {
                 tasks.map(async ({ task }) => {
                     const result = await generateText({
                         model,
+                        providerOptions,
                         system: ANALYSIS_SYSTEM,
                         prompt: task,
                         tools: {
                             ...withFullOutput(sparkscanTools),
                             ...withFullOutput(flashnetTools),
+                            search,
+                            scrape,
+                            map,
                         },
                         stopWhen: stepCountIs(10),
                         abortSignal,
