@@ -523,10 +523,8 @@ export async function POST(req: NextRequest) {
                             delegateToWriter,
                         },
                         stopWhen: [stepCountIs(5), hasToolCall('delegateToWriter')],
-                        onFinish: cleanup,
                         onError: ({ error }) => {
-                            console.error('[chat] stream error:', error);
-                            void cleanup();
+                            console.error('[chat] orchestrator stream error:', error);
                         },
                     });
 
@@ -534,6 +532,18 @@ export async function POST(req: NextRequest) {
                         // eslint-disable-next-line @typescript-eslint/no-explicit-any
                         result.toUIMessageStream().pipeThrough(createJsonRenderTransform()) as any,
                     );
+                },
+                // Cleanup runs after ALL merged streams drain — including the
+                // writer stream attached inside `delegateToWriter`. Wiring it
+                // to the orchestrator's `streamText.onFinish` would shut down
+                // PostHog before the writer's spans are flushed.
+                onFinish: async () => {
+                    await cleanup();
+                },
+                onError: (error) => {
+                    console.error('[chat] outer stream error:', error);
+                    void cleanup();
+                    return error instanceof Error ? error.message : 'Stream error';
                 },
             });
 
