@@ -211,14 +211,16 @@ export async function POST(req: NextRequest) {
             ...(phSessionId ? { $session_id: phSessionId } : {}),
         };
 
-        // Mark this user turn as a span under the conversation trace.
+        // Emit a $ai_trace root for this turn so PostHog names/groups the
+        // conversation in LLM Observability. Re-emitting per turn with the
+        // same $ai_trace_id is intentional — it keeps the trace named by the
+        // latest user query while grouping every generation under one trace.
         const queryPreview = userQuery ? String(userQuery).slice(0, 100) : 'chat';
         posthog.capture({
             distinctId: distinctId ?? 'anonymous',
-            event: '$ai_span',
+            event: '$ai_trace',
             properties: {
                 $ai_trace_id: traceId,
-                $ai_span_id: crypto.randomUUID(),
                 $ai_span_name: queryPreview,
                 ...baseProperties,
             },
