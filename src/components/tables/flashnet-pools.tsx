@@ -2,7 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
-import { flashnetProxyFetch } from '@/lib/api';
+import { flashnetProxyFetch } from '@/lib/api-client';
 import type { FlashnetPoolsResponse } from '@/lib/types';
 import { useReportData } from '@/lib/use-report-data';
 import type { InferredColumn } from './column-inference';

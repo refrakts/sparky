@@ -1,3 +1,4 @@
+import 'server-only';
 import pLimit from 'p-limit';
 import { env } from '@/env';
 
@@ -88,54 +89,4 @@ export async function flashnetPost<T>(path: string, body: unknown): Promise<T> {
         }
         return res.json() as Promise<T>;
     });
-}
-
-/**
- * Client-safe: fetch through the Next.js proxy at /api/flashnet/[...path].
- * Use this in "use client" components.
- */
-export async function flashnetProxyFetch<T>(
-    path: string,
-    params?: Record<string, string | number | undefined | null>,
-): Promise<T> {
-    const cleanPath = path.replace(/^\//, '');
-    const url = new URL(`/api/flashnet/${cleanPath}`, window.location.origin);
-    if (params) {
-        for (const [k, v] of Object.entries(params)) {
-            if (v !== undefined && v !== null) {
-                url.searchParams.set(k, String(v));
-            }
-        }
-    }
-    const res = await fetch(url.toString());
-    if (!res.ok) {
-        throw new Error(`Flashnet proxy error: ${res.status} ${res.statusText}`);
-    }
-    return res.json() as Promise<T>;
-}
-
-/**
- * Client-safe: fetch through the Next.js proxy at /api/sparkscan/[...path].
- * The upstream URL and network param are handled server-side.
- * Use this in "use client" components.
- */
-export async function sparkscanProxyFetch<T>(
-    path: string,
-    params?: Record<string, string | number | undefined | null>,
-): Promise<T> {
-    // Strip leading slash so it doesn't double up
-    const cleanPath = path.replace(/^\//, '');
-    const url = new URL(`/api/sparkscan/${cleanPath}`, window.location.origin);
-    if (params) {
-        for (const [k, v] of Object.entries(params)) {
-            if (v !== undefined && v !== null) {
-                url.searchParams.set(k, String(v));
-            }
-        }
-    }
-    const res = await fetch(url.toString());
-    if (!res.ok) {
-        throw new Error(`Sparkscan proxy error: ${res.status} ${res.statusText}`);
-    }
-    return res.json() as Promise<T>;
 }

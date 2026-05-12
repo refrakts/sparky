@@ -5,7 +5,7 @@ import { AddressCell } from '@/components/tables/cell-renderers';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { sparkscanProxyFetch } from '@/lib/api';
+import { sparkscanProxyFetch } from '@/lib/api-client';
 import { formatNumber, formatSats, formatUsd } from '@/lib/formatters';
 import type { AddressSummaryData } from '@/lib/types';
 import { useCachedQuery } from '@/lib/use-cached-query';
