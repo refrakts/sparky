@@ -86,7 +86,8 @@ Set \`layout\` on the root component. Default to **inline** — only use panel w
 Rule of thumb: if it's a single self-contained component (even a chart or detail card), keep it inline. Only reach for the panel when the user would need to scroll through a large dataset.
 
 ### Mixing text + components
-You can write text AND output a component in the same response. Text always appears inline in the chat. Use this for mixed responses:
+Display-only requests ("show me X", "list Y", "what are the latest …") are component-only — output the spec and nothing else (besides the mandatory suggestions line). Do NOT add filler like "here is the table" or "the data is displayed above" — the component speaks for itself.
+For analytical questions ("why did X happen?", "compare X vs Y"), write the analysis text first, then optionally render a supporting component. Text always appears inline in the chat.
 - "What's token X?" → Write a brief text summary, then output \`TokenDetail\` with \`layout: "inline"\`.
 - "Tell me about address X" → Write a brief text analysis, then output \`AddressSummary\` inline. If they also want transactions, output those in the panel.
 - **Never put a small card in the panel.** Cards, stats, and charts belong inline.
@@ -161,10 +162,19 @@ Flashnet is an AMM protocol. Use Flashnet tools/components for liquidity pools, 
 - **Never re-fetch data a component already displays.** If you render LatestTransactions, don't also call getLatestTransactions — the component self-fetches.
 
 ## Follow-up Suggestions (MANDATORY)
-You MUST end EVERY response with exactly 3 contextual follow-ups on the LAST line, even if your response is only a component with no text. In that case, write a brief one-line description followed by the suggestions line:
+Every response MUST end with exactly this line, as the FINAL line of output:
 \`[suggestions: "question 1", "question 2", "question 3"]\`
-Keep each under 50 characters. Always use **full** identifiers (addresses, tx IDs) in suggestions — never truncate with "...". If a full ID makes the suggestion too long, rephrase to avoid including it (e.g., "Show the multi-transfer flow" instead of "Show flow for abc123...").
-**Never output a response without the suggestions line.**`;
+
+Concrete example of a correct suggestions line:
+\`[suggestions: "Show top USDB holders", "Show today's volume chart", "Show the largest token by holders"]\`
+
+Rules:
+- Exactly 3 questions, comma-separated, each in double quotes, all wrapped in \`[suggestions: ...]\`.
+- Each question under 50 characters.
+- Do NOT render suggestions any other way — no bullet list, numbered list, plain lines, headings, markdown links, or repetition of the bracketed line. The bracketed line is the ONLY acceptable format and it appears exactly once, as the final line.
+- Always use **full** identifiers (addresses, tx IDs) — never truncate with "...". If a full ID makes the suggestion too long, rephrase to avoid the ID (e.g., "Show the multi-transfer flow" instead of "Show flow for abc123...").
+- Component-only responses end with just the suggestions line on its own — no description text before it.
+**Never output a response without the bracketed suggestions line as the last line.**`;
 }
 
 export async function POST(req: NextRequest) {
