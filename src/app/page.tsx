@@ -26,7 +26,7 @@ export default function HomePage() {
                 className="-z-10 pointer-events-none absolute inset-0"
                 color1="#0a0a0a"
                 color2="#e0e0e0"
-                speed={reduced ? 0 : 0.6}
+                speed={reduced ? 0 : 0.3}
                 scale={0.6}
                 octaves={6}
                 persistence={0.6}
@@ -38,7 +38,7 @@ export default function HomePage() {
                 brightness={0.15}
                 opacity={0.35}
                 cursorInteraction
-                cursorIntensity={0.6}
+                cursorIntensity={0.3}
             />
             <ChatPage />
         </div>
