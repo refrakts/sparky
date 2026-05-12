@@ -350,6 +350,14 @@ export async function POST(req: NextRequest) {
         // Use the client's chat session id as the trace id so every turn in a
         // conversation lands inside the same trace in LLM Observability.
         const traceId = sessionId ?? crypto.randomUUID();
+        // Mirror @posthog/ai's captureAiGeneration: when no cookie distinctId
+        // is available, fall back to traceId so the manual $ai_trace lands
+        // alongside the $ai_generation events (PostHog groups by distinct_id
+        // + $ai_trace_id), and set $process_person_profile: false so an
+        // anonymous chat session doesn't mint a Person profile keyed by a
+        // synthetic id.
+        const effectiveDistinctId = distinctId ?? traceId;
+        const anonymousProfileSuppression = distinctId ? {} : { $process_person_profile: false };
         const baseProperties = {
             ...(sessionId ? { $ai_session_id: sessionId } : {}),
             ...(phSessionId ? { $session_id: phSessionId } : {}),
@@ -361,12 +369,13 @@ export async function POST(req: NextRequest) {
         // latest user query while grouping every generation under one trace.
         const queryPreview = userQuery ? String(userQuery).slice(0, 100) : 'chat';
         posthog.capture({
-            distinctId: distinctId ?? 'anonymous',
+            distinctId: effectiveDistinctId,
             event: '$ai_trace',
             properties: {
                 $ai_trace_id: traceId,
                 $ai_span_name: queryPreview,
                 ...baseProperties,
+                ...anonymousProfileSuppression,
             },
         });
 
