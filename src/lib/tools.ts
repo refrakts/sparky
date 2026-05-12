@@ -637,17 +637,28 @@ export function createResearchSearchTool({ rerankModelId, sparkSearch, flashnetS
             if (items.length === 0) return { items: [], reranked: false };
             if (items.length <= topN) return { items, reranked: false };
 
-            const result = await rerank({
-                model: gateway.rerankingModel(rerankModelId),
-                query,
-                documents: items.map(itemToRerankDoc),
-                topN,
-                abortSignal,
-            });
-            return {
-                items: result.ranking.map((r) => items[r.originalIndex]).filter((x): x is ResearchItem => x != null),
-                reranked: true,
-            };
+            try {
+                const result = await rerank({
+                    model: gateway.rerankingModel(rerankModelId),
+                    query,
+                    documents: items.map(itemToRerankDoc),
+                    topN,
+                    abortSignal,
+                });
+                return {
+                    items: result.ranking
+                        .map((r) => items[r.originalIndex])
+                        .filter((x): x is ResearchItem => x != null),
+                    reranked: true,
+                };
+            } catch (error) {
+                // Rerank is the last step — if the gateway is flaky or the
+                // model id is misconfigured we still have usable items from
+                // the search fan-out. Degrade to an unreranked top-N rather
+                // than throwing the whole research call away.
+                console.error('[researchSearch] rerank failed, returning unreranked top-N:', error);
+                return { items: items.slice(0, topN), reranked: false };
+            }
         },
     });
 }
@@ -758,7 +769,6 @@ export function createParallelAnalysisTool(
                         tools: {
                             ...withFullOutput(sparkscanTools),
                             ...withFullOutput(flashnetTools),
-                            search,
                             scrape,
                             map,
                             ...(extraTools ?? {}),
