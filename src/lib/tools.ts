@@ -538,12 +538,20 @@ interface ResearchSearchOptions {
  * `{ content: [{ type: 'text', text: '...' }, ...] }`. Each text chunk
  * becomes one rerank candidate. If the server returns one big blob, that's
  * one candidate; rerank still scores it usefully alongside web snippets.
+ *
+ * MCP tools signal tool-level failure via `isError: true` instead of
+ * throwing, so we drop those payloads here — otherwise an error message
+ * could be reranked as if it were a real docs hit.
  */
 function mcpResultToItems(
     raw: unknown,
     source: 'spark' | 'flashnet',
 ): Array<Extract<ResearchItem, { source: 'spark' | 'flashnet' }>> {
     if (!raw || typeof raw !== 'object') return [];
+    if ((raw as { isError?: unknown }).isError === true) {
+        console.error(`[researchSearch] ${source} MCP returned isError:`, raw);
+        return [];
+    }
     const content = (raw as { content?: unknown }).content;
     if (!Array.isArray(content)) return [];
     const items: Array<Extract<ResearchItem, { source: 'spark' | 'flashnet' }>> = [];
@@ -685,10 +693,27 @@ Guidelines:
 - You can ONLY use tools and return text. You CANNOT render UI components.
 - Always include full identifiers (addresses, tx IDs) in your response — never truncate.`;
 
+/**
+ * Factory for tools that should not be eagerly connected — e.g. MCP-derived
+ * tools that require network I/O to discover. Resolves to `{}` on failure
+ * so a flaky docs server doesn't break the whole subagent.
+ */
+export type ExtraToolsFactory = () => Promise<ToolSet>;
+
+async function resolveExtras(factory: ExtraToolsFactory | undefined, label: string): Promise<ToolSet> {
+    if (!factory) return {};
+    try {
+        return await factory();
+    } catch (error) {
+        console.error(`[${label}] extra tools factory failed:`, error);
+        return {};
+    }
+}
+
 export function createDeepAnalysisTool(
     model: LanguageModel,
     providerOptions?: GenerateTextProviderOptions,
-    extraTools?: ToolSet,
+    extraToolsFactory?: ExtraToolsFactory,
 ) {
     return tool({
         description:
@@ -701,6 +726,7 @@ export function createDeepAnalysisTool(
                 ),
         }),
         execute: async ({ task }, { abortSignal }) => {
+            const extras = await resolveExtras(extraToolsFactory, 'deepAnalysis');
             const result = await generateText({
                 model,
                 providerOptions,
@@ -711,7 +737,7 @@ export function createDeepAnalysisTool(
                     ...withFullOutput(flashnetTools),
                     scrape,
                     map,
-                    ...(extraTools ?? {}),
+                    ...extras,
                 },
                 stopWhen: stepCountIs(15),
                 abortSignal,
@@ -733,7 +759,7 @@ type ParallelAnalysisResult = { id: string; text: string; ok: boolean };
 export function createParallelAnalysisTool(
     model: LanguageModel,
     providerOptions?: GenerateTextProviderOptions,
-    extraTools?: ToolSet,
+    extraToolsFactory?: ExtraToolsFactory,
 ) {
     return tool({
         description:
@@ -759,6 +785,9 @@ export function createParallelAnalysisTool(
                 .describe('Between 2 and 6 independent subtasks to run concurrently.'),
         }),
         execute: async ({ tasks }, { abortSignal }): Promise<ParallelAnalysisResult[]> => {
+            // Resolve once for the whole fan-out so all subtasks share the
+            // same MCP connection (the factory caller is expected to memoize).
+            const extras = await resolveExtras(extraToolsFactory, 'parallelAnalysis');
             const settled = await Promise.allSettled(
                 tasks.map(async ({ task }) => {
                     const result = await generateText({
@@ -771,7 +800,7 @@ export function createParallelAnalysisTool(
                             ...withFullOutput(flashnetTools),
                             scrape,
                             map,
-                            ...(extraTools ?? {}),
+                            ...extras,
                         },
                         stopWhen: stepCountIs(10),
                         abortSignal,

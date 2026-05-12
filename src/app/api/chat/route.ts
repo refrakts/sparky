@@ -42,6 +42,83 @@ async function connectMcp(url: string, label: string): Promise<MCPClient | null>
     }
 }
 
+/**
+ * Fetch the tool definitions from an MCP client. Tool discovery is a second
+ * network step after `createMCPClient` and can fail independently — wrap it
+ * so a slow/broken docs server doesn't 500 the whole chat.
+ */
+async function safeTools(client: MCPClient | null, label: string): Promise<Record<string, unknown>> {
+    if (!client) return {};
+    try {
+        return (await client.tools()) as Record<string, unknown>;
+    } catch (error) {
+        console.error(`[mcp:${label}] failed to list tools:`, error);
+        return {};
+    }
+}
+
+/**
+ * Lazy MCP wiring. Connection + tool discovery happens on the first call to
+ * `getExtras()` — typically inside a subagent execute, so simple chat
+ * requests that never trigger deepAnalysis/parallelAnalysis don't pay the
+ * docs MCP latency. `close()` is idempotent and a no-op if nothing was ever
+ * opened.
+ */
+function createMcpExtras(opts: { rerankModelId: string }): {
+    getExtras: () => Promise<ToolSet>;
+    close: () => Promise<void>;
+} {
+    let opened = false;
+    let closed = false;
+    let cached: Promise<ToolSet> | null = null;
+    let clients: Array<MCPClient | null> = [];
+
+    const open = async (): Promise<ToolSet> => {
+        if (closed) return {};
+        opened = true;
+        const [sparkMcp, flashnetMcp] = await Promise.all([
+            connectMcp(env.SPARK_MCP_URL, 'spark'),
+            connectMcp(env.FLASHNET_MCP_URL, 'flashnet'),
+        ]);
+        clients = [sparkMcp, flashnetMcp];
+        const [sparkToolSet, flashnetToolSet] = await Promise.all([
+            safeTools(sparkMcp, 'spark'),
+            safeTools(flashnetMcp, 'flashnet'),
+        ]);
+        const { search_spark: sparkSearchTool, ...sparkRest } = sparkToolSet;
+        const { search_flashnet: flashnetSearchTool, ...flashnetRest } = flashnetToolSet;
+        const researchSearch = createResearchSearchTool({
+            rerankModelId: opts.rerankModelId,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            sparkSearch: sparkSearchTool as any,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            flashnetSearch: flashnetSearchTool as any,
+        });
+        return { ...sparkRest, ...flashnetRest, researchSearch } as ToolSet;
+    };
+
+    return {
+        getExtras: () => {
+            if (closed) return Promise.resolve({} as ToolSet);
+            if (!cached) cached = open();
+            return cached;
+        },
+        close: async () => {
+            if (closed) return;
+            closed = true;
+            if (!opened) return;
+            // Wait for any in-flight open before closing so we don't leak
+            // a half-initialized client.
+            try {
+                await cached;
+            } catch {
+                // open() already logs; we just need to proceed to close.
+            }
+            await Promise.allSettled(clients.map((c) => c?.close()));
+        },
+    };
+}
+
 async function fetchNetworkContext(): Promise<string> {
     try {
         const stats = await sparkscanFetch<NetworkSummary>('/v2/stats/summary');
@@ -275,48 +352,31 @@ export async function POST(req: NextRequest) {
         });
         const workerProviderOptions = getProviderOptions('worker');
 
-        // Connect doc MCP servers up-front so the worker subagents get their
-        // tools alongside Firecrawl + Sparkscan + Flashnet. Both run in
-        // parallel; either failure is non-fatal.
-        const [sparkMcp, flashnetMcp] = await Promise.all([
-            connectMcp(env.SPARK_MCP_URL, 'spark'),
-            connectMcp(env.FLASHNET_MCP_URL, 'flashnet'),
-        ]);
-        const [sparkToolSet, flashnetToolSet] = await Promise.all([
-            sparkMcp ? sparkMcp.tools() : Promise.resolve({}),
-            flashnetMcp ? flashnetMcp.tools() : Promise.resolve({}),
-        ]);
-
-        // researchSearch fuses Firecrawl `search` + MCP `search_*` and reranks
-        // the union via the AI Gateway. Pull the raw MCP search tools out of
-        // the worker's tool list so the worker only sees the fused tool plus
-        // the docs-filesystem drill-down tools.
-        const { search_spark: sparkSearchTool, ...sparkRest } = sparkToolSet as Record<string, unknown>;
-        const { search_flashnet: flashnetSearchTool, ...flashnetRest } = flashnetToolSet as Record<string, unknown>;
-        const researchSearch = createResearchSearchTool({
-            rerankModelId: env.MODEL_RERANK,
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            sparkSearch: sparkSearchTool as any,
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            flashnetSearch: flashnetSearchTool as any,
-        });
-        const mcpTools = { ...sparkRest, ...flashnetRest, researchSearch } as ToolSet;
-
-        // Cleanup is idempotent so onFinish + onError can both fire safely,
-        // and so the outer catch can run it on synchronous setup errors.
+        // Lazy MCP wiring: connecting to the docs MCPs and listing their
+        // tools is deferred until the first subagent invocation. Simple
+        // display/component queries that never trigger deepAnalysis or
+        // parallelAnalysis don't pay the docs MCP latency, and a slow docs
+        // server can't delay first token. Defining cleanup immediately —
+        // before any further awaits — guarantees the outer catch can close
+        // anything that did get opened.
+        const mcpExtras = createMcpExtras({ rerankModelId: env.MODEL_RERANK });
         let cleanedUp = false;
         const cleanup = async () => {
             if (cleanedUp) return;
             cleanedUp = true;
-            await Promise.allSettled([sparkMcp?.close(), flashnetMcp?.close()]);
+            await mcpExtras.close();
             await posthog.shutdown();
         };
 
-        const deepAnalysis = createDeepAnalysisTool(tracedDeepAnalysisModel, workerProviderOptions, mcpTools);
+        const deepAnalysis = createDeepAnalysisTool(
+            tracedDeepAnalysisModel,
+            workerProviderOptions,
+            mcpExtras.getExtras,
+        );
         const parallelAnalysis = createParallelAnalysisTool(
             tracedParallelAnalysisModel,
             workerProviderOptions,
-            mcpTools,
+            mcpExtras.getExtras,
         );
 
         try {
