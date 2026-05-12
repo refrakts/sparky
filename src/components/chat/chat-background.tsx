@@ -1,9 +1,7 @@
 'use client';
 
-import dynamic from 'next/dynamic';
 import { useEffect, useState } from 'react';
-
-const Watercolor = dynamic(() => import('@/components/ui/watercolor').then((m) => m.Watercolor), { ssr: false });
+import { Watercolor } from '@/components/ui/watercolor';
 
 function usePrefersReducedMotion() {
     const [reduced, setReduced] = useState(false);
@@ -19,6 +17,13 @@ function usePrefersReducedMotion() {
 
 export function ChatBackground() {
     const reduced = usePrefersReducedMotion();
+    const [mounted, setMounted] = useState(false);
+    useEffect(() => {
+        setMounted(true);
+    }, []);
+
+    if (!mounted) return null;
+
     return (
         <Watercolor
             className="-z-10 pointer-events-none absolute inset-0"
