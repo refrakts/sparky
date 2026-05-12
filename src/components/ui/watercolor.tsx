@@ -189,8 +189,35 @@ const WatercolorScene: React.FC<WatercolorSceneProps> = ({
     cursorIntensity,
 }) => {
     const meshRef = useRef<THREE.Mesh>(null);
-    const { size, viewport } = useThree();
+    const { size, viewport, invalidate } = useThree();
     const smoothPointer = useRef(new THREE.Vector2(0.5, 0.5));
+
+    // In frameloop='demand' mode, useFrame only runs when something invalidates
+    // the scene. Trigger one render whenever a uniform-affecting prop or the
+    // canvas size changes so the shader picks up the new state.
+    useEffect(() => {
+        invalidate();
+    }, [
+        invalidate,
+        speed,
+        scale,
+        octaves,
+        persistence,
+        lacunarity,
+        driftSpeed,
+        warpSpeed,
+        col1Rgb,
+        col2Rgb,
+        colorGain,
+        saturation,
+        brightness,
+        opacity,
+        cursorInteraction,
+        cursorIntensity,
+        size.width,
+        size.height,
+        viewport.dpr,
+    ]);
 
     const uniforms = useMemo(
         () => ({

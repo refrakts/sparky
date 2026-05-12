@@ -42,7 +42,7 @@ export function ChatBackground() {
             opacity={0.35}
             cursorInteraction={!reduced}
             cursorIntensity={0.3}
-            frameloop={reduced ? 'never' : 'always'}
+            frameloop={reduced ? 'demand' : 'always'}
         />
     );
 }
