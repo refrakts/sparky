@@ -23,6 +23,18 @@ import type { NetworkSummary } from '@/lib/types';
 
 export const maxDuration = 60;
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/**
+ * Both `sessionId` (from the request body) and `X-POSTHOG-SESSION-ID` (from
+ * headers) are client-controlled. They become $ai_trace_id / $ai_session_id /
+ * $session_id, so an unvalidated string could poison traces or blow up the
+ * cardinality of PostHog property values. Accept only canonical UUID form;
+ * the caller falls back to crypto.randomUUID() or drops the field otherwise.
+ */
+function asValidUuid(value: unknown): string | undefined {
+    return typeof value === 'string' && value.length === 36 && UUID_RE.test(value) ? value : undefined;
+}
+
 async function fetchNetworkContext(): Promise<string> {
     try {
         const stats = await sparkscanFetch<NetworkSummary>('/v2/stats/summary');
@@ -178,9 +190,10 @@ export async function POST(req: NextRequest) {
         const cookieName = `ph_${env.NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN}_posthog`;
         const cookieValue = req.cookies.get(cookieName)?.value;
         const distinctId = cookieValue ? JSON.parse(cookieValue).distinct_id : undefined;
-        const phSessionId = req.headers.get('x-posthog-session-id') ?? undefined;
+        const phSessionId = asValidUuid(req.headers.get('x-posthog-session-id'));
 
-        const { messages, sessionId, clientContext } = await req.json();
+        const { messages, sessionId: rawSessionId, clientContext } = await req.json();
+        const sessionId = asValidUuid(rawSessionId);
 
         const userQuery =
             messages.at(-1)?.parts?.find((p: { type: string }) => p.type === 'text')?.text ?? messages.at(-1)?.content;
