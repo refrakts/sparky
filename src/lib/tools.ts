@@ -530,7 +530,7 @@ Guidelines:
 export function createDeepAnalysisTool(model: LanguageModel) {
     return tool({
         description:
-            'Delegate a complex analytical task to a research subagent. Use this for questions that require cross-referencing multiple data sources, comparing entities, analyzing patterns over time, or producing detailed reports. NOT for simple lookups or displaying a single component.',
+            'Delegate a complex analytical task to a research subagent. Use this for a SINGLE-ENTITY deep dive that needs cross-referencing multiple data sources or analyzing patterns over time. For multi-entity comparison or aggregation, use parallelAnalysis instead.',
         inputSchema: z.object({
             task: z
                 .string()
@@ -556,6 +556,73 @@ export function createDeepAnalysisTool(model: LanguageModel) {
             const text = output as string;
             // Truncate if very long — the main agent only needs the summary
             return textOutput(text.length > 3000 ? `${text.slice(0, 3000)}…` : text);
+        }),
+    });
+}
+
+// ─── Parallel Analysis Subagents (fan-out) ──────────────────────────
+
+type ParallelAnalysisResult = { id: string; text: string; ok: boolean };
+
+export function createParallelAnalysisTool(model: LanguageModel) {
+    return tool({
+        description:
+            'Run multiple independent analyses in parallel, one subagent per task. Use when the user asks to COMPARE or AGGREGATE across N distinct entities (e.g. "compare these 3 tokens", "rank these wallets by activity"). Each task should be self-contained and analyzable independently. For a single-entity deep dive, use deepAnalysis instead.',
+        inputSchema: z.object({
+            tasks: z
+                .array(
+                    z.object({
+                        id: z
+                            .string()
+                            .describe(
+                                'Short identifier for this subtask (e.g. token ticker, address prefix, or label) — used to attribute results.',
+                            ),
+                        task: z
+                            .string()
+                            .describe(
+                                'A clear, self-contained description of the analysis for this entity. Include the full identifier (address, token name, etc.).',
+                            ),
+                    }),
+                )
+                .min(2)
+                .max(6)
+                .describe('Between 2 and 6 independent subtasks to run concurrently.'),
+        }),
+        execute: async ({ tasks }, { abortSignal }): Promise<ParallelAnalysisResult[]> => {
+            const settled = await Promise.allSettled(
+                tasks.map(async ({ task }) => {
+                    const result = await generateText({
+                        model,
+                        system: ANALYSIS_SYSTEM,
+                        prompt: task,
+                        tools: {
+                            ...withFullOutput(sparkscanTools),
+                            ...withFullOutput(flashnetTools),
+                        },
+                        stopWhen: stepCountIs(10),
+                        abortSignal,
+                    });
+                    return result.text;
+                }),
+            );
+            return settled.map((r, i) => {
+                const id = tasks[i].id;
+                if (r.status === 'fulfilled') return { id, text: r.value, ok: true };
+                const reason = r.reason instanceof Error ? r.reason.message : String(r.reason);
+                return { id, text: `Subagent failed: ${reason}`, ok: false };
+            });
+        },
+        toModelOutput: safeModelOutput(async ({ output }) => {
+            const items = output as ParallelAnalysisResult[];
+            const PER_ITEM_LIMIT = 1500;
+            const body = items
+                .map((i) => {
+                    const head = `## ${i.id}${i.ok ? '' : ' (failed)'}`;
+                    const text = i.text.length > PER_ITEM_LIMIT ? `${i.text.slice(0, PER_ITEM_LIMIT)}…` : i.text;
+                    return `${head}\n${text}`;
+                })
+                .join('\n\n');
+            return textOutput(body);
         }),
     });
 }
