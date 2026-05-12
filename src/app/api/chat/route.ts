@@ -1,3 +1,4 @@
+import { createMCPClient, type MCPClient } from '@ai-sdk/mcp';
 import { createJsonRenderTransform } from '@json-render/core';
 import { withTracing } from '@posthog/ai';
 import {
@@ -6,15 +7,18 @@ import {
     createUIMessageStreamResponse,
     stepCountIs,
     streamText,
+    type ToolSet,
 } from 'ai';
 import type { NextRequest } from 'next/server';
 import { env } from '@/env';
 import { sparkscanFetch } from '@/lib/api';
 import { getModel, getProviderOptions } from '@/lib/models';
 import posthogClient from '@/lib/posthog';
+import { withTimeout } from '@/lib/timeout';
 import {
     createDeepAnalysisTool,
     createParallelAnalysisTool,
+    createResearchSearchTool,
     flashnetTools,
     type SubagentStepEvent,
     sparkscanTools,
@@ -22,6 +26,123 @@ import {
 import type { NetworkSummary } from '@/lib/types';
 
 export const maxDuration = 60;
+
+// Per-stage MCP timeouts. The route's overall maxDuration is 60s; a slow
+// docs server should not consume more than a small fraction of that before
+// the subagent gives up on it and proceeds with the healthy sources.
+const MCP_CONNECT_TIMEOUT_MS = 5_000;
+const MCP_TOOLS_TIMEOUT_MS = 5_000;
+
+/**
+ * Connect to an MCP docs server with a timeout. If the connect succeeds
+ * after we've already given up, the late client is closed to avoid leaking
+ * a socket. All failure modes (timeout, network, server error) log + return
+ * null so the worker still has the other backends.
+ */
+async function connectMcp(url: string, label: string): Promise<MCPClient | null> {
+    try {
+        return await withTimeout(
+            createMCPClient({ transport: { type: 'http', url }, clientName: 'sparky' }),
+            MCP_CONNECT_TIMEOUT_MS,
+            `mcp:${label} connect`,
+            (client) => {
+                console.warn(`[mcp:${label}] connected after timeout — closing orphan client`);
+                void client.close().catch(() => {});
+            },
+        );
+    } catch (error) {
+        console.error(`[mcp:${label}] connect failed (${url}):`, error);
+        return null;
+    }
+}
+
+/**
+ * Fetch tool definitions from an MCP client, with a timeout. Tool discovery
+ * is a second network step after `createMCPClient` and can fail
+ * independently; a slow tools/list can't be allowed to delay the whole
+ * subagent setup.
+ */
+async function safeTools(client: MCPClient | null, label: string): Promise<Record<string, unknown>> {
+    if (!client) return {};
+    try {
+        const tools = await withTimeout(client.tools(), MCP_TOOLS_TIMEOUT_MS, `mcp:${label} tools/list`);
+        return tools as Record<string, unknown>;
+    } catch (error) {
+        console.error(`[mcp:${label}] tools/list failed:`, error);
+        return {};
+    }
+}
+
+/**
+ * Lazy MCP wiring. Connection + tool discovery happens on the first call to
+ * `getExtras()` — typically inside a subagent execute, so simple chat
+ * requests that never trigger deepAnalysis/parallelAnalysis don't pay the
+ * docs MCP latency. `close()` is idempotent and a no-op if nothing was ever
+ * opened.
+ */
+async function openSource(
+    url: string,
+    label: string,
+): Promise<{ client: MCPClient | null; tools: Record<string, unknown> }> {
+    const client = await connectMcp(url, label);
+    const tools = await safeTools(client, label);
+    return { client, tools };
+}
+
+function createMcpExtras(opts: { rerankModelId: string }): {
+    getExtras: () => Promise<ToolSet>;
+    close: () => Promise<void>;
+} {
+    let opened = false;
+    let closed = false;
+    let cached: Promise<ToolSet> | null = null;
+    let clients: Array<MCPClient | null> = [];
+
+    const open = async (): Promise<ToolSet> => {
+        if (closed) return {};
+        opened = true;
+        // Per-source pipelines run independently so a hung Spark MCP can't
+        // block Flashnet (or vice versa). Each pipeline is internally
+        // bounded by per-stage timeouts inside connectMcp / safeTools, so
+        // the whole open() is bounded even if both sources are slow.
+        const [sparkResult, flashnetResult] = await Promise.all([
+            openSource(env.SPARK_MCP_URL, 'spark'),
+            openSource(env.FLASHNET_MCP_URL, 'flashnet'),
+        ]);
+        clients = [sparkResult.client, flashnetResult.client];
+        const { search_spark: sparkSearchTool, ...sparkRest } = sparkResult.tools;
+        const { search_flashnet: flashnetSearchTool, ...flashnetRest } = flashnetResult.tools;
+        const researchSearch = createResearchSearchTool({
+            rerankModelId: opts.rerankModelId,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            sparkSearch: sparkSearchTool as any,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            flashnetSearch: flashnetSearchTool as any,
+        });
+        return { ...sparkRest, ...flashnetRest, researchSearch } as ToolSet;
+    };
+
+    return {
+        getExtras: () => {
+            if (closed) return Promise.resolve({} as ToolSet);
+            if (!cached) cached = open();
+            return cached;
+        },
+        close: async () => {
+            if (closed) return;
+            closed = true;
+            if (!opened) return;
+            // Wait for any in-flight open before closing so we don't leak
+            // a half-initialized client.
+            try {
+                await cached;
+            } catch {
+                // open() already logs; we just need to proceed to close.
+            }
+            await Promise.allSettled(clients.map((c) => c?.close()));
+        },
+    };
+}
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /**
@@ -147,7 +268,7 @@ For complex **analytical** questions that need **3+ tool calls** or cross-refere
   - "Rank these 3 wallets by trading volume"
   - "Audit these 4 pools for impermanent loss exposure"
 
-Each subagent runs autonomously, calls as many tools as needed, and returns a structured analysis. Subagents have access to Sparkscan + Flashnet tools AND web-research tools (search, scrape, map) — so they can combine on-chain data with off-chain context (project info, news, team, recent events). You then relay findings to the user (you may add components alongside).
+Each subagent runs autonomously, calls as many tools as needed, and returns a structured analysis. Subagents have access to Sparkscan + Flashnet tools AND cross-source research (\`researchSearch\` fuses the open web, the Spark docs MCP, and the Flashnet docs MCP, then reranks by relevance) plus drill-down tools (\`scrape\`, \`map\`, \`query_docs_filesystem_spark\`, \`query_docs_filesystem_flashnet\`). They can combine on-chain data with off-chain context (project info, news, team, recent events, SDK semantics). You then relay findings to the user (you may add components alongside).
 
 **Do NOT use a subagent when:**
 - A UI component can handle it (e.g., "show me latest transactions" → just render LatestTransactions)
@@ -276,45 +397,75 @@ export async function POST(req: NextRequest) {
         });
         const workerProviderOptions = getProviderOptions('worker');
 
-        // Pipe through json-render transform to classify text vs JSONL patches.
-        // Tools are constructed inside execute() so they can call writer.write()
-        // to emit `data-subagentStep` parts while their internal loop runs.
-        const stream = createUIMessageStream({
-            execute: async ({ writer }) => {
-                const emitStep = (event: SubagentStepEvent) => {
-                    writer.write({ type: 'data-subagentStep', data: event });
-                };
-                const deepAnalysis = createDeepAnalysisTool(tracedDeepAnalysisModel, workerProviderOptions, emitStep);
-                const parallelAnalysis = createParallelAnalysisTool(
-                    tracedParallelAnalysisModel,
-                    workerProviderOptions,
-                    emitStep,
-                );
+        // Lazy MCP wiring: connecting to the docs MCPs and listing their
+        // tools is deferred until the first subagent invocation. Simple
+        // display/component queries that never trigger deepAnalysis or
+        // parallelAnalysis don't pay the docs MCP latency, and a slow docs
+        // server can't delay first token. Defining cleanup immediately —
+        // before any further awaits — guarantees the outer catch can close
+        // anything that did get opened.
+        const mcpExtras = createMcpExtras({ rerankModelId: env.MODEL_RERANK });
+        let cleanedUp = false;
+        const cleanup = async () => {
+            if (cleanedUp) return;
+            cleanedUp = true;
+            await mcpExtras.close();
+            await posthog.shutdown();
+        };
 
-                const result = streamText({
-                    model: tracedModel,
-                    system: fullSystem,
-                    messages: modelMessages,
-                    tools: {
-                        ...sparkscanTools,
-                        ...flashnetTools,
-                        deepAnalysis,
-                        parallelAnalysis,
-                    },
-                    stopWhen: stepCountIs(5),
-                    onFinish: async () => {
-                        await posthog.shutdown();
-                    },
-                });
+        try {
+            // Pipe through json-render transform to classify text vs JSONL patches.
+            // Tools are constructed inside execute() so they can call writer.write()
+            // to emit `data-subagentStep` parts while their internal loop runs.
+            const stream = createUIMessageStream({
+                execute: async ({ writer }) => {
+                    const emitStep = (event: SubagentStepEvent) => {
+                        writer.write({ type: 'data-subagentStep', data: event });
+                    };
+                    const deepAnalysis = createDeepAnalysisTool(
+                        tracedDeepAnalysisModel,
+                        workerProviderOptions,
+                        mcpExtras.getExtras,
+                        emitStep,
+                    );
+                    const parallelAnalysis = createParallelAnalysisTool(
+                        tracedParallelAnalysisModel,
+                        workerProviderOptions,
+                        mcpExtras.getExtras,
+                        emitStep,
+                    );
 
-                writer.merge(
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    result.toUIMessageStream().pipeThrough(createJsonRenderTransform()) as any,
-                );
-            },
-        });
+                    const result = streamText({
+                        model: tracedModel,
+                        system: fullSystem,
+                        messages: modelMessages,
+                        tools: {
+                            ...sparkscanTools,
+                            ...flashnetTools,
+                            deepAnalysis,
+                            parallelAnalysis,
+                        },
+                        stopWhen: stepCountIs(5),
+                        onFinish: cleanup,
+                        onError: ({ error }) => {
+                            console.error('[chat] stream error:', error);
+                            void cleanup();
+                        },
+                    });
 
-        return createUIMessageStreamResponse({ stream });
+                    writer.merge(
+                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                        result.toUIMessageStream().pipeThrough(createJsonRenderTransform()) as any,
+                    );
+                },
+            });
+
+            return createUIMessageStreamResponse({ stream });
+        } catch (streamError) {
+            // Synchronous stream-setup error — cleanup MCP clients before rethrowing.
+            await cleanup();
+            throw streamError;
+        }
     } catch (error) {
         console.error('Chat API error:', error);
         const message = error instanceof Error ? error.message : 'An unexpected error occurred';

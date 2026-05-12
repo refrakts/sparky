@@ -15,12 +15,24 @@ export const env = createEnv({
         SPARKSCAN_API_URL: z.url().default('https://api.sparkscan.io'),
         FLASHNET_API_URL: z.url().default('https://api.flashnet.xyz'),
 
+        // Documentation MCP servers — connected per-request by worker subagents
+        // for cross-source research alongside Firecrawl web search. Failures
+        // are non-fatal; the worker still has the other backends.
+        SPARK_MCP_URL: z.url().default('https://docs.spark.money/mcp'),
+        FLASHNET_MCP_URL: z.url().default('https://docs.flashnet.xyz/mcp'),
+
         // Per-role models for the AI Gateway. Any model the gateway accepts
         // works (e.g. `cohere/command-a`, `openai/gpt-5`, `openai/gpt-4o-mini`,
         // `mistral/mistral-large-latest`, `google/gemini-2.5-flash`,
         // `google/gemini-2.5-flash-lite`).
         MODEL_ORCHESTRATOR: z.string().default('cohere/command-a'),
         MODEL_WORKER: z.string().default('google/gemini-2.5-flash-lite'),
+
+        // Reranking model for worker `researchSearch` fusion across Firecrawl
+        // + Spark/Flashnet docs MCPs. Routes through the AI Gateway —
+        // `cohere/rerank-v4-fast` (default) or `cohere/rerank-v4-pro` for
+        // higher quality. Set to any model the gateway exposes for reranking.
+        MODEL_RERANK: z.string().default('cohere/rerank-v4-fast'),
 
         // OpenAI reasoning effort for the worker subagent. Only applies when
         // the worker is an OpenAI reasoning model (o-series, gpt-5). Ignored
@@ -40,8 +52,11 @@ export const env = createEnv({
         FIRECRAWL_API_KEY: process.env.FIRECRAWL_API_KEY,
         SPARKSCAN_API_URL: process.env.SPARKSCAN_API_URL,
         FLASHNET_API_URL: process.env.FLASHNET_API_URL,
+        SPARK_MCP_URL: process.env.SPARK_MCP_URL,
+        FLASHNET_MCP_URL: process.env.FLASHNET_MCP_URL,
         MODEL_ORCHESTRATOR: process.env.MODEL_ORCHESTRATOR,
         MODEL_WORKER: process.env.MODEL_WORKER,
+        MODEL_RERANK: process.env.MODEL_RERANK,
         WORKER_REASONING_EFFORT: process.env.WORKER_REASONING_EFFORT,
         NEXT_PUBLIC_SITE_URL: process.env.NEXT_PUBLIC_SITE_URL,
         NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN: process.env.NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN,
