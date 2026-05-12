@@ -2,7 +2,7 @@
 
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import type * as React from 'react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import * as THREE from 'three';
 
 import { cn } from '@/lib/utils';
@@ -46,6 +46,8 @@ export interface WatercolorProps {
     cursorInteraction?: boolean;
     /** Cursor effect strength multiplier (0–3) */
     cursorIntensity?: number;
+    /** Three.js render strategy. Use 'never' to fully stop GPU work when fully static. */
+    frameloop?: 'always' | 'demand' | 'never';
 }
 
 const VERTEX_SHADER = `
@@ -120,7 +122,7 @@ void main() {
 
   vec2 pointerCoord = (uPointer * 2.0 - 1.0) * vec2(uRes.x / uRes.y, 1.0) * uScale;
   float cursorDist = length(coord - pointerCoord);
-  float cursorInfluence = smoothstep(0.8, 0.0, cursorDist) * uCursorActive * uCursorIntensity;
+  float cursorInfluence = (1.0 - smoothstep(0.0, 0.8, cursorDist)) * uCursorActive * uCursorIntensity;
 
   vec2 cursorDir = normalize(coord - pointerCoord + 0.001);
   vec2 warpedCoord = coord + cursorDir * cursorInfluence * 0.12;
@@ -163,7 +165,7 @@ interface WatercolorSceneProps {
     saturation: number;
     brightness: number;
     opacity: number;
-    pointer: [number, number];
+    pointerRef: React.RefObject<[number, number]>;
     cursorInteraction: boolean;
     cursorIntensity: number;
 }
@@ -182,7 +184,7 @@ const WatercolorScene: React.FC<WatercolorSceneProps> = ({
     saturation,
     brightness,
     opacity,
-    pointer,
+    pointerRef,
     cursorInteraction,
     cursorIntensity,
 }) => {
@@ -237,8 +239,9 @@ const WatercolorScene: React.FC<WatercolorSceneProps> = ({
         mat.uniforms.uCursorIntensity.value = cursorIntensity;
 
         const ease = 1 - Math.exp(-delta / 0.15);
-        smoothPointer.current.x += (pointer[0] - smoothPointer.current.x) * ease;
-        smoothPointer.current.y += (pointer[1] - smoothPointer.current.y) * ease;
+        const [px, py] = pointerRef.current;
+        smoothPointer.current.x += (px - smoothPointer.current.x) * ease;
+        smoothPointer.current.y += (py - smoothPointer.current.y) * ease;
         mat.uniforms.uPointer.value.set(smoothPointer.current.x, smoothPointer.current.y);
     });
 
@@ -275,33 +278,33 @@ export const Watercolor: React.FC<WatercolorProps> = ({
     opacity = 1,
     cursorInteraction = false,
     cursorIntensity = 1,
+    frameloop = 'always',
 }) => {
     const col1Rgb = useMemo(() => parseHexColor(color1), [color1]);
     const col2Rgb = useMemo(() => parseHexColor(color2), [color2]);
 
     const containerRef = useRef<HTMLDivElement>(null);
-    const [pointer, setPointer] = useState<[number, number]>([0.5, 0.5]);
-
-    const updatePointer = useCallback((clientX: number, clientY: number) => {
-        const rect = containerRef.current?.getBoundingClientRect();
-        if (!rect) return;
-        const nx = (clientX - rect.left) / rect.width;
-        const ny = 1 - (clientY - rect.top) / rect.height;
-        setPointer([nx, ny]);
-    }, []);
+    const pointerRef = useRef<[number, number]>([0.5, 0.5]);
 
     useEffect(() => {
         if (!cursorInteraction) return;
-        const handle = (e: PointerEvent) => updatePointer(e.clientX, e.clientY);
-        window.addEventListener('pointermove', handle);
+        const handle = (e: PointerEvent) => {
+            const rect = containerRef.current?.getBoundingClientRect();
+            if (!rect) return;
+            pointerRef.current[0] = (e.clientX - rect.left) / rect.width;
+            pointerRef.current[1] = 1 - (e.clientY - rect.top) / rect.height;
+        };
+        window.addEventListener('pointermove', handle, { passive: true });
         return () => window.removeEventListener('pointermove', handle);
-    }, [cursorInteraction, updatePointer]);
+    }, [cursorInteraction]);
 
     return (
         <div ref={containerRef} className={cn('relative overflow-hidden', className)} style={{ width, height }}>
             <Canvas
                 className="absolute inset-0 h-full w-full"
                 orthographic
+                dpr={[1, 1.5]}
+                frameloop={frameloop}
                 camera={{
                     position: [0, 0, 1],
                     zoom: 1,
@@ -326,12 +329,12 @@ export const Watercolor: React.FC<WatercolorProps> = ({
                     saturation={saturation}
                     brightness={brightness}
                     opacity={opacity}
-                    pointer={pointer}
+                    pointerRef={pointerRef}
                     cursorInteraction={cursorInteraction}
                     cursorIntensity={cursorIntensity}
                 />
             </Canvas>
-            {children && <div className="pointer-events-none relative z-10">{children}</div>}
+            {children && <div className="relative z-10">{children}</div>}
         </div>
     );
 };
