@@ -209,29 +209,45 @@ const DEFAULT_PANEL_COMPONENTS = new Set([
     'TransactionFlow',
 ]);
 
+/** Layout wrappers that should not be used as a panel title — we want the content type instead */
+const LAYOUT_WRAPPER_TYPES = new Set(['Grid', 'GridItem']);
+
 /**
- * Walk a spec and all its elements, checking if any node matches a predicate.
+ * Walk a spec and all its elements, returning the first node that matches a predicate.
  * Handles both resolved tree specs (nested children) and flat element-map specs.
  */
-function specTreeHas(spec: SpecNode | null | undefined, predicate: (node: SpecNode) => boolean): boolean {
-    if (!spec) return false;
+function specTreeFind(spec: SpecNode | null | undefined, predicate: (node: SpecNode) => boolean): SpecNode | undefined {
+    if (!spec) return undefined;
 
     // Check the root node itself
-    if (predicate(spec)) return true;
+    if (predicate(spec)) return spec;
 
     // Flat element map (raw JSON Render spec shape: { elements: { id: { type, props, children } } })
     if (spec.elements && typeof spec.elements === 'object') {
-        return Object.values(spec.elements).some((el) => el && predicate(el));
+        for (const el of Object.values(spec.elements)) {
+            if (el && predicate(el)) return el;
+        }
+        return undefined;
     }
 
     // Resolved tree with nested children
     if (Array.isArray(spec.children)) {
-        return spec.children.some((child) =>
-            typeof child === 'object' && child !== null ? specTreeHas(child as SpecNode, predicate) : false,
-        );
+        for (const child of spec.children) {
+            if (typeof child !== 'object' || child === null) continue;
+            const found = specTreeFind(child as SpecNode, predicate);
+            if (found) return found;
+        }
     }
 
-    return false;
+    return undefined;
+}
+
+function specTreeHas(spec: SpecNode | null | undefined, predicate: (node: SpecNode) => boolean): boolean {
+    return specTreeFind(spec, predicate) !== undefined;
+}
+
+function formatTypeName(type: string): string {
+    return type.replace(/([a-z])([A-Z])/g, '$1 $2');
 }
 
 /**
@@ -283,11 +299,12 @@ export function MessageRenderer({ message, isStreaming, onSuggestionClick }: Mes
     // Show pondering when: streaming with no text/spec, AND either no tools yet or all tools finished (model is thinking)
     const showPondering = isStreaming && !textContent && !hasSpec && (toolParts.length === 0 || allToolsDone);
 
-    // Derive a title from the spec for the panel header
-    const specTitle =
-        hasSpec && spec
-            ? ((spec as { type?: string }).type?.replace(/([a-z])([A-Z])/g, '$1 $2') ?? 'Result')
-            : 'Result';
+    // Derive a title from the spec for the panel header. If the root is a layout
+    // wrapper (Grid/GridItem) or has no type, walk the tree for the first
+    // user-meaningful component name.
+    const titleNode =
+        hasSpec && spec ? specTreeFind(spec, (n) => !!n.type && !LAYOUT_WRAPPER_TYPES.has(n.type)) : undefined;
+    const specTitle = titleNode?.type ? formatTypeName(titleNode.type) : 'Result';
 
     const inline = hasSpec && spec ? shouldRenderInline(spec) : false;
 
