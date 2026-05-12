@@ -1,3 +1,4 @@
+import { createMCPClient, type MCPClient } from '@ai-sdk/mcp';
 import { createJsonRenderTransform } from '@json-render/core';
 import { withTracing } from '@posthog/ai';
 import {
@@ -6,6 +7,7 @@ import {
     createUIMessageStreamResponse,
     stepCountIs,
     streamText,
+    type ToolSet,
 } from 'ai';
 import type { NextRequest } from 'next/server';
 import { env } from '@/env';
@@ -16,6 +18,23 @@ import { createDeepAnalysisTool, createParallelAnalysisTool, flashnetTools, spar
 import type { NetworkSummary } from '@/lib/types';
 
 export const maxDuration = 60;
+
+/**
+ * Connect to an MCP docs server. Failures are swallowed — the worker
+ * subagent still has the other research backends (Firecrawl + the other MCP)
+ * so we don't want one server outage to break chat entirely.
+ */
+async function connectMcp(url: string, label: string): Promise<MCPClient | null> {
+    try {
+        return await createMCPClient({
+            transport: { type: 'http', url },
+            clientName: 'sparky',
+        });
+    } catch (error) {
+        console.error(`[mcp:${label}] failed to connect to ${url}:`, error);
+        return null;
+    }
+}
 
 async function fetchNetworkContext(): Promise<string> {
     try {
@@ -249,36 +268,72 @@ export async function POST(req: NextRequest) {
             },
         });
         const workerProviderOptions = getProviderOptions('worker');
-        const deepAnalysis = createDeepAnalysisTool(tracedDeepAnalysisModel, workerProviderOptions);
-        const parallelAnalysis = createParallelAnalysisTool(tracedParallelAnalysisModel, workerProviderOptions);
 
-        const result = streamText({
-            model: tracedModel,
-            system: fullSystem,
-            messages: modelMessages,
-            tools: {
-                ...sparkscanTools,
-                ...flashnetTools,
-                deepAnalysis,
-                parallelAnalysis,
-            },
-            stopWhen: stepCountIs(5),
-            onFinish: async () => {
-                await posthog.shutdown();
-            },
-        });
+        // Connect doc MCP servers up-front so the worker subagents get their
+        // tools alongside Firecrawl + Sparkscan + Flashnet. Both runs in
+        // parallel; either failure is non-fatal.
+        const [sparkMcp, flashnetMcp] = await Promise.all([
+            connectMcp(env.SPARK_MCP_URL, 'spark'),
+            connectMcp(env.FLASHNET_MCP_URL, 'flashnet'),
+        ]);
+        const mcpToolSets = await Promise.all([
+            sparkMcp ? sparkMcp.tools() : Promise.resolve({}),
+            flashnetMcp ? flashnetMcp.tools() : Promise.resolve({}),
+        ]);
+        const mcpTools = Object.assign({}, ...mcpToolSets) as ToolSet;
 
-        // Pipe through json-render transform to classify text vs JSONL patches
-        const stream = createUIMessageStream({
-            execute: async ({ writer }) => {
-                writer.merge(
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                    result.toUIMessageStream().pipeThrough(createJsonRenderTransform()) as any,
-                );
-            },
-        });
+        // Cleanup is idempotent so onFinish + onError can both fire safely,
+        // and so the outer catch can run it on synchronous setup errors.
+        let cleanedUp = false;
+        const cleanup = async () => {
+            if (cleanedUp) return;
+            cleanedUp = true;
+            await Promise.allSettled([sparkMcp?.close(), flashnetMcp?.close()]);
+            await posthog.shutdown();
+        };
 
-        return createUIMessageStreamResponse({ stream });
+        const deepAnalysis = createDeepAnalysisTool(tracedDeepAnalysisModel, workerProviderOptions, mcpTools);
+        const parallelAnalysis = createParallelAnalysisTool(
+            tracedParallelAnalysisModel,
+            workerProviderOptions,
+            mcpTools,
+        );
+
+        try {
+            const result = streamText({
+                model: tracedModel,
+                system: fullSystem,
+                messages: modelMessages,
+                tools: {
+                    ...sparkscanTools,
+                    ...flashnetTools,
+                    deepAnalysis,
+                    parallelAnalysis,
+                },
+                stopWhen: stepCountIs(5),
+                onFinish: cleanup,
+                onError: ({ error }) => {
+                    console.error('[chat] stream error:', error);
+                    void cleanup();
+                },
+            });
+
+            // Pipe through json-render transform to classify text vs JSONL patches
+            const stream = createUIMessageStream({
+                execute: async ({ writer }) => {
+                    writer.merge(
+                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                        result.toUIMessageStream().pipeThrough(createJsonRenderTransform()) as any,
+                    );
+                },
+            });
+
+            return createUIMessageStreamResponse({ stream });
+        } catch (streamError) {
+            // Synchronous stream-setup error — cleanup MCP clients before rethrowing.
+            await cleanup();
+            throw streamError;
+        }
     } catch (error) {
         console.error('Chat API error:', error);
         const message = error instanceof Error ? error.message : 'An unexpected error occurred';

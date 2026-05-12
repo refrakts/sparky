@@ -1,4 +1,4 @@
-import { generateText, type LanguageModel, stepCountIs, tool } from 'ai';
+import { generateText, type LanguageModel, stepCountIs, type ToolSet, tool } from 'ai';
 import { map, scrape, search } from 'firecrawl-aisdk';
 import { z } from 'zod';
 import { flashnetFetch, flashnetPost, sparkscanFetch } from './api';
@@ -517,14 +517,15 @@ function withFullOutput<T extends Record<string, any>>(tools: T): T {
 
 // ─── Deep Analysis Subagent ─────────────────────────────────────────
 
-const ANALYSIS_SYSTEM = `You are a Spark blockchain data analyst with web research capability. You have tools to query on-chain data (Sparkscan, Flashnet) AND web research tools (Firecrawl: search, scrape, map).
+const ANALYSIS_SYSTEM = `You are a Spark blockchain data analyst with web research and documentation lookup. You have tools to query on-chain data (Sparkscan, Flashnet), search Spark + Flashnet official docs (\`search_spark\`, \`query_docs_filesystem_spark\`, \`search_flashnet\`, \`query_docs_filesystem_flashnet\` — when available), and search the open web (Firecrawl: \`search\`, \`scrape\`, \`map\`).
 
 Your job: complete the analytical task by calling as many tools as needed, then write a structured summary.
 
 Guidelines:
 - Call tools to gather all the data you need before writing your analysis.
-- Use \`search\` to find web sources, \`scrape\` to extract content from a known URL, and \`map\` to discover URLs on a domain. Combine web findings with on-chain metrics when the question benefits from off-chain context (project descriptions, news, team info, recent events).
-- Cite source URLs when you reference web content.
+- For "how does Spark/Flashnet work" or integration/API questions, prefer the docs tools (\`search_spark\`, \`search_flashnet\`) — they cover SDK references, payment flows, AMM mechanics, etc.
+- Use Firecrawl \`search\` for the open web (news, project info, team, recent events), \`scrape\` for a known URL, and \`map\` to discover URLs on a domain. Combine web findings with on-chain metrics when the question benefits from off-chain context.
+- Cite source URLs when you reference web or docs content.
 - Compute derived metrics: ratios, percentages, distributions, comparisons.
 - Format numbers readably: $10.5M, 177K accounts, 3,984 txs.
 - Structure your final response with **bold** key findings, bullet lists, and clear sections.
@@ -532,7 +533,11 @@ Guidelines:
 - You can ONLY use tools and return text. You CANNOT render UI components.
 - Always include full identifiers (addresses, tx IDs) in your response — never truncate.`;
 
-export function createDeepAnalysisTool(model: LanguageModel, providerOptions?: GenerateTextProviderOptions) {
+export function createDeepAnalysisTool(
+    model: LanguageModel,
+    providerOptions?: GenerateTextProviderOptions,
+    extraTools?: ToolSet,
+) {
     return tool({
         description:
             'Delegate a complex analytical task to a research subagent. Use this for a SINGLE-ENTITY deep dive that needs cross-referencing multiple data sources, web research, or analyzing patterns over time. For multi-entity comparison or aggregation, use parallelAnalysis instead.',
@@ -555,6 +560,7 @@ export function createDeepAnalysisTool(model: LanguageModel, providerOptions?: G
                     search,
                     scrape,
                     map,
+                    ...(extraTools ?? {}),
                 },
                 stopWhen: stepCountIs(15),
                 abortSignal,
@@ -573,7 +579,11 @@ export function createDeepAnalysisTool(model: LanguageModel, providerOptions?: G
 
 type ParallelAnalysisResult = { id: string; text: string; ok: boolean };
 
-export function createParallelAnalysisTool(model: LanguageModel, providerOptions?: GenerateTextProviderOptions) {
+export function createParallelAnalysisTool(
+    model: LanguageModel,
+    providerOptions?: GenerateTextProviderOptions,
+    extraTools?: ToolSet,
+) {
     return tool({
         description:
             'Run multiple independent analyses in parallel, one subagent per task. Use when the user asks to COMPARE or AGGREGATE across N distinct entities (e.g. "compare these 3 tokens", "rank these wallets by activity"). Each task should be self-contained and analyzable independently. For a single-entity deep dive, use deepAnalysis instead.',
@@ -611,6 +621,7 @@ export function createParallelAnalysisTool(model: LanguageModel, providerOptions
                             search,
                             scrape,
                             map,
+                            ...(extraTools ?? {}),
                         },
                         stopWhen: stepCountIs(10),
                         abortSignal,

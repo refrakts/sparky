@@ -15,6 +15,12 @@ export const env = createEnv({
         SPARKSCAN_API_URL: z.url().default('https://api.sparkscan.io'),
         FLASHNET_API_URL: z.url().default('https://api.flashnet.xyz'),
 
+        // Documentation MCP servers — connected per-request by worker subagents
+        // for cross-source research alongside Firecrawl web search. Failures
+        // are non-fatal; the worker still has the other backends.
+        SPARK_MCP_URL: z.url().default('https://docs.spark.money/mcp'),
+        FLASHNET_MCP_URL: z.url().default('https://docs.flashnet.xyz/mcp'),
+
         // Per-role models for the AI Gateway. Any model the gateway accepts
         // works (e.g. `cohere/command-a`, `openai/gpt-5`, `openai/gpt-4o-mini`,
         // `mistral/mistral-large-latest`, `google/gemini-2.5-flash`,
@@ -40,6 +46,8 @@ export const env = createEnv({
         FIRECRAWL_API_KEY: process.env.FIRECRAWL_API_KEY,
         SPARKSCAN_API_URL: process.env.SPARKSCAN_API_URL,
         FLASHNET_API_URL: process.env.FLASHNET_API_URL,
+        SPARK_MCP_URL: process.env.SPARK_MCP_URL,
+        FLASHNET_MCP_URL: process.env.FLASHNET_MCP_URL,
         MODEL_ORCHESTRATOR: process.env.MODEL_ORCHESTRATOR,
         MODEL_WORKER: process.env.MODEL_WORKER,
         WORKER_REASONING_EFFORT: process.env.WORKER_REASONING_EFFORT,
