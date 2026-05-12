@@ -172,6 +172,7 @@ export async function POST(req: NextRequest) {
         const cookieName = `ph_${env.NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN}_posthog`;
         const cookieValue = req.cookies.get(cookieName)?.value;
         const distinctId = cookieValue ? JSON.parse(cookieValue).distinct_id : undefined;
+        const phSessionId = req.headers.get('x-posthog-session-id') ?? undefined;
 
         const { messages, sessionId, clientContext } = await req.json();
 
@@ -196,18 +197,22 @@ export async function POST(req: NextRequest) {
 
         const model = await getModel('orchestrator');
         const posthog = posthogClient();
-        const traceId = crypto.randomUUID();
+        // Use the client's chat session id as the trace id so every turn in a
+        // conversation lands inside the same trace in LLM Observability.
+        const traceId = sessionId ?? crypto.randomUUID();
         const baseProperties = {
             ...(sessionId ? { $ai_session_id: sessionId } : {}),
+            ...(phSessionId ? { $session_id: phSessionId } : {}),
         };
 
-        // Emit an explicit trace event so PostHog names and groups the trace
+        // Mark this user turn as a span under the conversation trace.
         const queryPreview = userQuery ? String(userQuery).slice(0, 100) : 'chat';
         posthog.capture({
             distinctId: distinctId ?? 'anonymous',
-            event: '$ai_trace',
+            event: '$ai_span',
             properties: {
                 $ai_trace_id: traceId,
+                $ai_span_id: crypto.randomUUID(),
                 $ai_span_name: queryPreview,
                 ...baseProperties,
             },
