@@ -1,4 +1,4 @@
-import { generateText, type LanguageModel, stepCountIs, type ToolSet, tool } from 'ai';
+import { gateway, generateText, type LanguageModel, rerank, stepCountIs, type Tool, type ToolSet, tool } from 'ai';
 import { map, scrape, search } from 'firecrawl-aisdk';
 import { z } from 'zod';
 import { flashnetFetch, flashnetPost, sparkscanFetch } from './api';
@@ -515,17 +515,158 @@ function withFullOutput<T extends Record<string, any>>(tools: T): T {
     return result as T;
 }
 
+// ─── researchSearch: cross-source fusion ────────────────────────────
+
+export type ResearchItem =
+    | { source: 'web'; title: string; url: string; snippet: string }
+    | { source: 'spark' | 'flashnet'; title: string; text: string };
+
+// MCP search tools advertise `{ query: string }` (per the Spark/Flashnet MCP
+// schemas). We type loosely on output because each MCP returns a
+// CallToolResult with provider-specific text content.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type McpSearchTool = Tool<{ query: string }, any>;
+
+interface ResearchSearchOptions {
+    rerankModelId: string;
+    sparkSearch?: McpSearchTool;
+    flashnetSearch?: McpSearchTool;
+}
+
+/**
+ * Extract plain-text snippets from an MCP CallToolResult. MCP servers return
+ * `{ content: [{ type: 'text', text: '...' }, ...] }`. Each text chunk
+ * becomes one rerank candidate. If the server returns one big blob, that's
+ * one candidate; rerank still scores it usefully alongside web snippets.
+ */
+function mcpResultToItems(
+    raw: unknown,
+    source: 'spark' | 'flashnet',
+): Array<Extract<ResearchItem, { source: 'spark' | 'flashnet' }>> {
+    if (!raw || typeof raw !== 'object') return [];
+    const content = (raw as { content?: unknown }).content;
+    if (!Array.isArray(content)) return [];
+    const items: Array<Extract<ResearchItem, { source: 'spark' | 'flashnet' }>> = [];
+    for (const part of content) {
+        if (
+            part &&
+            typeof part === 'object' &&
+            (part as { type?: unknown }).type === 'text' &&
+            typeof (part as { text?: unknown }).text === 'string'
+        ) {
+            const text = (part as { text: string }).text.trim();
+            if (text.length === 0) continue;
+            const firstLine =
+                text
+                    .split('\n', 1)[0]
+                    ?.replace(/^#+\s*/, '')
+                    .slice(0, 120) ?? '';
+            items.push({ source, title: firstLine, text });
+        }
+    }
+    return items;
+}
+
+function itemToRerankDoc(item: ResearchItem): string {
+    if (item.source === 'web') {
+        return `${item.title}\n${item.url}\n${item.snippet}`.trim();
+    }
+    return `${item.title}\n${item.text}`.trim();
+}
+
+export function createResearchSearchTool({ rerankModelId, sparkSearch, flashnetSearch }: ResearchSearchOptions) {
+    return tool({
+        description:
+            'Fused research search across the open web (Firecrawl), the Spark docs MCP, and the Flashnet docs MCP. Calls all available sources in parallel, then reranks the combined results by relevance to the query. Use this first for any research / context-gathering step; drill into specific hits with `scrape` (URL) or `query_docs_filesystem_spark` / `query_docs_filesystem_flashnet` (docs filesystem grep).',
+        inputSchema: z.object({
+            query: z.string().describe('The research query.'),
+            topN: z
+                .number()
+                .min(1)
+                .max(20)
+                .default(8)
+                .describe('Number of top results to return after reranking (default 8).'),
+        }),
+        execute: async ({ query, topN }, { toolCallId, messages, abortSignal }) => {
+            const callOpts = { toolCallId, messages, abortSignal };
+            const [webRes, sparkRes, flashnetRes] = await Promise.allSettled([
+                (async (): Promise<ResearchItem[]> => {
+                    if (!search.execute) return [];
+                    const data = (await search.execute({ query, limit: 10 }, callOpts)) as {
+                        web?: Array<{ url?: string; title?: string; description?: string }>;
+                    };
+                    const items: ResearchItem[] = [];
+                    for (const r of data.web ?? []) {
+                        if (typeof r.url !== 'string') continue;
+                        items.push({
+                            source: 'web',
+                            title: r.title ?? r.url,
+                            url: r.url,
+                            snippet: r.description ?? '',
+                        });
+                    }
+                    return items;
+                })(),
+                (async (): Promise<ResearchItem[]> => {
+                    if (!sparkSearch?.execute) return [];
+                    const result = await sparkSearch.execute({ query }, callOpts);
+                    return mcpResultToItems(result, 'spark');
+                })(),
+                (async (): Promise<ResearchItem[]> => {
+                    if (!flashnetSearch?.execute) return [];
+                    const result = await flashnetSearch.execute({ query }, callOpts);
+                    return mcpResultToItems(result, 'flashnet');
+                })(),
+            ]);
+
+            const log = (label: string, res: PromiseSettledResult<unknown>) => {
+                if (res.status === 'rejected') {
+                    console.error(`[researchSearch] ${label} failed:`, res.reason);
+                }
+            };
+            log('web', webRes);
+            log('spark', sparkRes);
+            log('flashnet', flashnetRes);
+
+            const items: ResearchItem[] = [
+                ...(webRes.status === 'fulfilled' ? webRes.value : []),
+                ...(sparkRes.status === 'fulfilled' ? sparkRes.value : []),
+                ...(flashnetRes.status === 'fulfilled' ? flashnetRes.value : []),
+            ];
+
+            if (items.length === 0) return { items: [], reranked: false };
+            if (items.length <= topN) return { items, reranked: false };
+
+            const result = await rerank({
+                model: gateway.rerankingModel(rerankModelId),
+                query,
+                documents: items.map(itemToRerankDoc),
+                topN,
+                abortSignal,
+            });
+            return {
+                items: result.ranking.map((r) => items[r.originalIndex]).filter((x): x is ResearchItem => x != null),
+                reranked: true,
+            };
+        },
+    });
+}
+
 // ─── Deep Analysis Subagent ─────────────────────────────────────────
 
-const ANALYSIS_SYSTEM = `You are a Spark blockchain data analyst with web research and documentation lookup. You have tools to query on-chain data (Sparkscan, Flashnet), search Spark + Flashnet official docs (\`search_spark\`, \`query_docs_filesystem_spark\`, \`search_flashnet\`, \`query_docs_filesystem_flashnet\` — when available), and search the open web (Firecrawl: \`search\`, \`scrape\`, \`map\`).
+const ANALYSIS_SYSTEM = `You are a Spark blockchain data analyst with on-chain, web, and documentation research capability. Your tools:
+
+- **On-chain data**: Sparkscan + Flashnet tools (addresses, tokens, transactions, pools, etc.)
+- **Cross-source research**: \`researchSearch\` — fans out to the open web (Firecrawl), the Spark docs MCP, and the Flashnet docs MCP in parallel, then reranks the combined results by relevance. Use this first for any research / context-gathering step.
+- **Drill-down**: \`scrape\` (fetch a URL), \`map\` (discover URLs on a domain), \`query_docs_filesystem_spark\` / \`query_docs_filesystem_flashnet\` (rg/grep/cat over the docs filesystems — when available).
 
 Your job: complete the analytical task by calling as many tools as needed, then write a structured summary.
 
 Guidelines:
 - Call tools to gather all the data you need before writing your analysis.
-- For "how does Spark/Flashnet work" or integration/API questions, prefer the docs tools (\`search_spark\`, \`search_flashnet\`) — they cover SDK references, payment flows, AMM mechanics, etc.
-- Use Firecrawl \`search\` for the open web (news, project info, team, recent events), \`scrape\` for a known URL, and \`map\` to discover URLs on a domain. Combine web findings with on-chain metrics when the question benefits from off-chain context.
-- Cite source URLs when you reference web or docs content.
+- Start research with \`researchSearch\` so you see the best hits across web + Spark docs + Flashnet docs in one ranked list. Then drill into specific hits with \`scrape\` or \`query_docs_filesystem_*\`.
+- Combine web/docs findings with on-chain metrics when the question benefits from off-chain context (project descriptions, news, team info, recent events, SDK semantics).
+- Cite source URLs (or docs paths) when you reference web or docs content.
 - Compute derived metrics: ratios, percentages, distributions, comparisons.
 - Format numbers readably: $10.5M, 177K accounts, 3,984 txs.
 - Structure your final response with **bold** key findings, bullet lists, and clear sections.
@@ -557,7 +698,6 @@ export function createDeepAnalysisTool(
                 tools: {
                     ...withFullOutput(sparkscanTools),
                     ...withFullOutput(flashnetTools),
-                    search,
                     scrape,
                     map,
                     ...(extraTools ?? {}),

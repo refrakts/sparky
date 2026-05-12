@@ -14,7 +14,13 @@ import { env } from '@/env';
 import { sparkscanFetch } from '@/lib/api';
 import { getModel, getProviderOptions } from '@/lib/models';
 import posthogClient from '@/lib/posthog';
-import { createDeepAnalysisTool, createParallelAnalysisTool, flashnetTools, sparkscanTools } from '@/lib/tools';
+import {
+    createDeepAnalysisTool,
+    createParallelAnalysisTool,
+    createResearchSearchTool,
+    flashnetTools,
+    sparkscanTools,
+} from '@/lib/tools';
 import type { NetworkSummary } from '@/lib/types';
 
 export const maxDuration = 60;
@@ -148,7 +154,7 @@ For complex **analytical** questions that need **3+ tool calls** or cross-refere
   - "Rank these 3 wallets by trading volume"
   - "Audit these 4 pools for impermanent loss exposure"
 
-Each subagent runs autonomously, calls as many tools as needed, and returns a structured analysis. Subagents have access to Sparkscan + Flashnet tools AND web-research tools (search, scrape, map) — so they can combine on-chain data with off-chain context (project info, news, team, recent events). You then relay findings to the user (you may add components alongside).
+Each subagent runs autonomously, calls as many tools as needed, and returns a structured analysis. Subagents have access to Sparkscan + Flashnet tools AND cross-source research (\`researchSearch\` fuses the open web, the Spark docs MCP, and the Flashnet docs MCP, then reranks by relevance) plus drill-down tools (\`scrape\`, \`map\`, \`query_docs_filesystem_spark\`, \`query_docs_filesystem_flashnet\`). They can combine on-chain data with off-chain context (project info, news, team, recent events, SDK semantics). You then relay findings to the user (you may add components alongside).
 
 **Do NOT use a subagent when:**
 - A UI component can handle it (e.g., "show me latest transactions" → just render LatestTransactions)
@@ -270,17 +276,31 @@ export async function POST(req: NextRequest) {
         const workerProviderOptions = getProviderOptions('worker');
 
         // Connect doc MCP servers up-front so the worker subagents get their
-        // tools alongside Firecrawl + Sparkscan + Flashnet. Both runs in
+        // tools alongside Firecrawl + Sparkscan + Flashnet. Both run in
         // parallel; either failure is non-fatal.
         const [sparkMcp, flashnetMcp] = await Promise.all([
             connectMcp(env.SPARK_MCP_URL, 'spark'),
             connectMcp(env.FLASHNET_MCP_URL, 'flashnet'),
         ]);
-        const mcpToolSets = await Promise.all([
+        const [sparkToolSet, flashnetToolSet] = await Promise.all([
             sparkMcp ? sparkMcp.tools() : Promise.resolve({}),
             flashnetMcp ? flashnetMcp.tools() : Promise.resolve({}),
         ]);
-        const mcpTools = Object.assign({}, ...mcpToolSets) as ToolSet;
+
+        // researchSearch fuses Firecrawl `search` + MCP `search_*` and reranks
+        // the union via the AI Gateway. Pull the raw MCP search tools out of
+        // the worker's tool list so the worker only sees the fused tool plus
+        // the docs-filesystem drill-down tools.
+        const { search_spark: sparkSearchTool, ...sparkRest } = sparkToolSet as Record<string, unknown>;
+        const { search_flashnet: flashnetSearchTool, ...flashnetRest } = flashnetToolSet as Record<string, unknown>;
+        const researchSearch = createResearchSearchTool({
+            rerankModelId: env.MODEL_RERANK,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            sparkSearch: sparkSearchTool as any,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            flashnetSearch: flashnetSearchTool as any,
+        });
+        const mcpTools = { ...sparkRest, ...flashnetRest, researchSearch } as ToolSet;
 
         // Cleanup is idempotent so onFinish + onError can both fire safely,
         // and so the outer catch can run it on synchronous setup errors.

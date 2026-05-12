@@ -28,6 +28,12 @@ export const env = createEnv({
         MODEL_ORCHESTRATOR: z.string().default('cohere/command-a'),
         MODEL_WORKER: z.string().default('google/gemini-2.5-flash-lite'),
 
+        // Reranking model for worker `researchSearch` fusion across Firecrawl
+        // + Spark/Flashnet docs MCPs. Routes through the AI Gateway —
+        // `cohere/rerank-v4-fast` (default) or `cohere/rerank-v4-pro` for
+        // higher quality. Set to any model the gateway exposes for reranking.
+        MODEL_RERANK: z.string().default('cohere/rerank-v4-fast'),
+
         // OpenAI reasoning effort for the worker subagent. Only applies when
         // the worker is an OpenAI reasoning model (o-series, gpt-5). Ignored
         // for non-OpenAI workers.
@@ -50,6 +56,7 @@ export const env = createEnv({
         FLASHNET_MCP_URL: process.env.FLASHNET_MCP_URL,
         MODEL_ORCHESTRATOR: process.env.MODEL_ORCHESTRATOR,
         MODEL_WORKER: process.env.MODEL_WORKER,
+        MODEL_RERANK: process.env.MODEL_RERANK,
         WORKER_REASONING_EFFORT: process.env.WORKER_REASONING_EFFORT,
         NEXT_PUBLIC_SITE_URL: process.env.NEXT_PUBLIC_SITE_URL,
         NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN: process.env.NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN,
