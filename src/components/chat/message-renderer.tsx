@@ -10,6 +10,7 @@ import remarkGfm from 'remark-gfm';
 import { AiSuggestedActions } from '@/components/elements/ai-suggested-actions';
 import { useDataCache } from '@/lib/data-cache';
 import { registry } from '@/lib/registry';
+import type { SubagentStepEvent } from '@/lib/tools';
 import { useChatPanel } from './chat-panel';
 
 interface SpecNode {
@@ -29,6 +30,13 @@ interface ToolPart extends Record<string, unknown> {
     state?: string;
     output?: unknown;
 }
+
+interface SubagentStepPart {
+    type: 'data-subagentStep';
+    data: SubagentStepEvent;
+}
+
+const SUBAGENT_TOOLS = new Set(['deepAnalysis', 'parallelAnalysis']);
 
 interface MessageRendererProps {
     message: UIMessage;
@@ -98,18 +106,80 @@ function toolLabel(name: string): string {
     );
 }
 
-function ToolCallItem({ part }: { part: Record<string, unknown> }) {
-    const [expanded, setExpanded] = useState(false);
-    const toolName = String(part.toolName ?? (part.type as string).replace('tool-', ''));
+function SubagentStepRows({ steps }: { steps: SubagentStepEvent[] }) {
+    const ordered = [...steps].sort((a, b) => a.stepIndex - b.stepIndex);
+    return (
+        <ol className="space-y-2">
+            {ordered.map((step) => {
+                const toolList =
+                    step.toolCalls.length > 0 ? step.toolCalls.map((c) => toolLabel(c.name)).join(', ') : 'Thinking';
+                return (
+                    <li key={`${step.subtaskId ?? ''}-${step.stepIndex}`} className="flex items-start gap-2">
+                        <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-muted-foreground/60" />
+                        <div className="min-w-0 flex-1">
+                            <div className="font-medium text-muted-foreground">{toolList}</div>
+                            {step.summary && (
+                                <div className="mt-0.5 truncate text-muted-foreground/70">{step.summary}</div>
+                            )}
+                        </div>
+                    </li>
+                );
+            })}
+        </ol>
+    );
+}
+
+function SubagentStepList({ steps, isParallel }: { steps: SubagentStepEvent[]; isParallel: boolean }) {
+    if (!isParallel) return <SubagentStepRows steps={steps} />;
+    const groups = new Map<string, SubagentStepEvent[]>();
+    for (const step of steps) {
+        const id = step.subtaskId ?? '';
+        const arr = groups.get(id) ?? [];
+        arr.push(step);
+        groups.set(id, arr);
+    }
+    return (
+        <div className="space-y-3">
+            {Array.from(groups.entries()).map(([id, branchSteps]) => (
+                <div key={id}>
+                    {id && (
+                        <div className="mb-1 text-[10px] font-semibold tracking-wider text-muted-foreground/80 uppercase">
+                            {id}
+                        </div>
+                    )}
+                    <SubagentStepRows steps={branchSteps} />
+                </div>
+            ))}
+        </div>
+    );
+}
+
+function ToolCallItem({ part, steps }: { part: ToolPart; steps?: SubagentStepEvent[] }) {
+    const toolName = String(part.toolName ?? part.type.replace('tool-', ''));
+    const isSubagent = SUBAGENT_TOOLS.has(toolName);
     const isDone = part.state === 'output-available' || part.state === 'result';
     const output = part.output as Record<string, unknown> | undefined;
+    const stepCount = steps?.length ?? 0;
+
+    // Subagent tools: auto-expanded while running, auto-collapse on completion.
+    // Other tools: collapsed by default; user expands to inspect JSON output.
+    const [expanded, setExpanded] = useState(isSubagent ? !isDone : false);
+    const prevIsDoneRef = useRef(isDone);
+    useEffect(() => {
+        if (isSubagent && !prevIsDoneRef.current && isDone) {
+            setExpanded(false);
+        }
+        prevIsDoneRef.current = isDone;
+    }, [isSubagent, isDone]);
+
+    const expandable = isSubagent ? stepCount > 0 : isDone && !!output;
 
     return (
         <div className="rounded-lg border bg-muted/50 text-xs">
             <button
                 type="button"
                 className="flex w-full items-center gap-2 px-3 py-2 text-left"
-                onClick={() => isDone && output && setExpanded(!expanded)}
+                onClick={() => expandable && setExpanded(!expanded)}
             >
                 {isDone ? (
                     <svg
@@ -121,7 +191,7 @@ function ToolCallItem({ part }: { part: Record<string, unknown> }) {
                         strokeWidth="2"
                         strokeLinecap="round"
                         strokeLinejoin="round"
-                        className="text-green-600 dark:text-green-400 shrink-0"
+                        className="shrink-0 text-green-600 dark:text-green-400"
                     >
                         <path d="M20 6 9 17l-5-5" />
                     </svg>
@@ -135,13 +205,18 @@ function ToolCallItem({ part }: { part: Record<string, unknown> }) {
                         strokeWidth="2"
                         strokeLinecap="round"
                         strokeLinejoin="round"
-                        className="animate-spin text-muted-foreground shrink-0"
+                        className="shrink-0 animate-spin text-muted-foreground"
                     >
                         <path d="M21 12a9 9 0 1 1-6.219-8.56" />
                     </svg>
                 )}
                 <span className="font-medium text-muted-foreground">{toolLabel(toolName)}</span>
-                {isDone && output && (
+                {isSubagent && stepCount > 0 && (
+                    <span className="text-muted-foreground/70">
+                        · {stepCount} {stepCount === 1 ? 'step' : 'steps'}
+                    </span>
+                )}
+                {expandable && (
                     <svg
                         width="12"
                         height="12"
@@ -157,11 +232,17 @@ function ToolCallItem({ part }: { part: Record<string, unknown> }) {
                     </svg>
                 )}
             </button>
-            {expanded && output && (
-                <div className="border-t px-3 py-2 max-h-48 overflow-auto">
-                    <pre className="whitespace-pre-wrap break-all text-[11px] text-muted-foreground">
-                        {JSON.stringify(output, null, 2).slice(0, 2000)}
-                    </pre>
+            {expanded && expandable && (
+                <div className="max-h-64 overflow-auto border-t px-3 py-2">
+                    {isSubagent && steps ? (
+                        <SubagentStepList steps={steps} isParallel={toolName === 'parallelAnalysis'} />
+                    ) : (
+                        output && (
+                            <pre className="whitespace-pre-wrap break-all text-[11px] text-muted-foreground">
+                                {JSON.stringify(output, null, 2).slice(0, 2000)}
+                            </pre>
+                        )
+                    )}
                 </div>
             )}
         </div>
@@ -172,11 +253,23 @@ function ToolCallDisplay({ parts }: { parts: UIMessage['parts'] }) {
     const toolParts = parts.filter((p) => p.type.startsWith('tool-'));
     if (toolParts.length === 0) return null;
 
+    const stepsByCallId = new Map<string, SubagentStepEvent[]>();
+    for (const part of parts) {
+        if (part.type !== 'data-subagentStep') continue;
+        const data = (part as unknown as SubagentStepPart).data;
+        if (!data?.toolCallId) continue;
+        const arr = stepsByCallId.get(data.toolCallId) ?? [];
+        arr.push(data);
+        stepsByCallId.set(data.toolCallId, arr);
+    }
+
     return (
         <div className="space-y-1.5">
-            {toolParts.map((part, i) => (
-                <ToolCallItem key={i} part={part as ToolPart} />
-            ))}
+            {toolParts.map((part, i) => {
+                const toolPart = part as ToolPart;
+                const steps = toolPart.toolCallId ? stepsByCallId.get(toolPart.toolCallId) : undefined;
+                return <ToolCallItem key={i} part={toolPart} steps={steps} />;
+            })}
         </div>
     );
 }

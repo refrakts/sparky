@@ -515,6 +515,26 @@ function withFullOutput<T extends Record<string, any>>(tools: T): T {
     return result as T;
 }
 
+// ─── Subagent step streaming ────────────────────────────────────────
+
+/**
+ * Emitted by deepAnalysis / parallelAnalysis after every internal step
+ * (= one round of tool calls + reasoning inside the subagent). The chat
+ * route forwards these to the UI as `data-subagentStep` parts so users can
+ * see progress while a long subagent is running.
+ */
+export type SubagentStepEvent = {
+    toolCallId: string;
+    /** Present only for parallelAnalysis branches; identifies which subtask. */
+    subtaskId?: string;
+    stepIndex: number;
+    toolCalls: { name: string }[];
+    /** First 160 chars of the step's text output, if any. */
+    summary?: string;
+};
+
+export type SubagentStepEmitter = (event: SubagentStepEvent) => void;
+
 // ─── Deep Analysis Subagent ─────────────────────────────────────────
 
 const ANALYSIS_SYSTEM = `You are a Spark blockchain data analyst with web research capability. You have tools to query on-chain data (Sparkscan, Flashnet) AND web research tools (Firecrawl: search, scrape, map).
@@ -532,7 +552,11 @@ Guidelines:
 - You can ONLY use tools and return text. You CANNOT render UI components.
 - Always include full identifiers (addresses, tx IDs) in your response — never truncate.`;
 
-export function createDeepAnalysisTool(model: LanguageModel, providerOptions?: GenerateTextProviderOptions) {
+export function createDeepAnalysisTool(
+    model: LanguageModel,
+    providerOptions?: GenerateTextProviderOptions,
+    emit?: SubagentStepEmitter,
+) {
     return tool({
         description:
             'Delegate a complex analytical task to a research subagent. Use this for a SINGLE-ENTITY deep dive that needs cross-referencing multiple data sources, web research, or analyzing patterns over time. For multi-entity comparison or aggregation, use parallelAnalysis instead.',
@@ -543,7 +567,8 @@ export function createDeepAnalysisTool(model: LanguageModel, providerOptions?: G
                     'A clear, self-contained description of the analysis to perform. Include any specific addresses, token names, or parameters.',
                 ),
         }),
-        execute: async ({ task }, { abortSignal }) => {
+        execute: async ({ task }, { toolCallId, abortSignal }) => {
+            let stepIndex = 0;
             const result = await generateText({
                 model,
                 providerOptions,
@@ -558,6 +583,14 @@ export function createDeepAnalysisTool(model: LanguageModel, providerOptions?: G
                 },
                 stopWhen: stepCountIs(15),
                 abortSignal,
+                onStepFinish: (step) => {
+                    emit?.({
+                        toolCallId,
+                        stepIndex: stepIndex++,
+                        toolCalls: step.toolCalls.map((c) => ({ name: c.toolName })),
+                        summary: step.text ? step.text.slice(0, 160) : undefined,
+                    });
+                },
             });
             return result.text;
         },
@@ -573,7 +606,11 @@ export function createDeepAnalysisTool(model: LanguageModel, providerOptions?: G
 
 type ParallelAnalysisResult = { id: string; text: string; ok: boolean };
 
-export function createParallelAnalysisTool(model: LanguageModel, providerOptions?: GenerateTextProviderOptions) {
+export function createParallelAnalysisTool(
+    model: LanguageModel,
+    providerOptions?: GenerateTextProviderOptions,
+    emit?: SubagentStepEmitter,
+) {
     return tool({
         description:
             'Run multiple independent analyses in parallel, one subagent per task. Use when the user asks to COMPARE or AGGREGATE across N distinct entities (e.g. "compare these 3 tokens", "rank these wallets by activity"). Each task should be self-contained and analyzable independently. For a single-entity deep dive, use deepAnalysis instead.',
@@ -597,9 +634,10 @@ export function createParallelAnalysisTool(model: LanguageModel, providerOptions
                 .max(6)
                 .describe('Between 2 and 6 independent subtasks to run concurrently.'),
         }),
-        execute: async ({ tasks }, { abortSignal }): Promise<ParallelAnalysisResult[]> => {
+        execute: async ({ tasks }, { toolCallId, abortSignal }): Promise<ParallelAnalysisResult[]> => {
             const settled = await Promise.allSettled(
-                tasks.map(async ({ task }) => {
+                tasks.map(async ({ id, task }) => {
+                    let stepIndex = 0;
                     const result = await generateText({
                         model,
                         providerOptions,
@@ -614,6 +652,15 @@ export function createParallelAnalysisTool(model: LanguageModel, providerOptions
                         },
                         stopWhen: stepCountIs(10),
                         abortSignal,
+                        onStepFinish: (step) => {
+                            emit?.({
+                                toolCallId,
+                                subtaskId: id,
+                                stepIndex: stepIndex++,
+                                toolCalls: step.toolCalls.map((c) => ({ name: c.toolName })),
+                                summary: step.text ? step.text.slice(0, 160) : undefined,
+                            });
+                        },
                     });
                     return result.text;
                 }),

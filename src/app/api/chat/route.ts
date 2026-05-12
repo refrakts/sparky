@@ -12,7 +12,13 @@ import { env } from '@/env';
 import { sparkscanFetch } from '@/lib/api';
 import { getModel, getProviderOptions } from '@/lib/models';
 import posthogClient from '@/lib/posthog';
-import { createDeepAnalysisTool, createParallelAnalysisTool, flashnetTools, sparkscanTools } from '@/lib/tools';
+import {
+    createDeepAnalysisTool,
+    createParallelAnalysisTool,
+    flashnetTools,
+    type SubagentStepEvent,
+    sparkscanTools,
+} from '@/lib/tools';
 import type { NetworkSummary } from '@/lib/types';
 
 export const maxDuration = 60;
@@ -254,28 +260,38 @@ export async function POST(req: NextRequest) {
             },
         });
         const workerProviderOptions = getProviderOptions('worker');
-        const deepAnalysis = createDeepAnalysisTool(tracedDeepAnalysisModel, workerProviderOptions);
-        const parallelAnalysis = createParallelAnalysisTool(tracedParallelAnalysisModel, workerProviderOptions);
 
-        const result = streamText({
-            model: tracedModel,
-            system: fullSystem,
-            messages: modelMessages,
-            tools: {
-                ...sparkscanTools,
-                ...flashnetTools,
-                deepAnalysis,
-                parallelAnalysis,
-            },
-            stopWhen: stepCountIs(5),
-            onFinish: async () => {
-                await posthog.shutdown();
-            },
-        });
-
-        // Pipe through json-render transform to classify text vs JSONL patches
+        // Pipe through json-render transform to classify text vs JSONL patches.
+        // Tools are constructed inside execute() so they can call writer.write()
+        // to emit `data-subagentStep` parts while their internal loop runs.
         const stream = createUIMessageStream({
             execute: async ({ writer }) => {
+                const emitStep = (event: SubagentStepEvent) => {
+                    writer.write({ type: 'data-subagentStep', data: event });
+                };
+                const deepAnalysis = createDeepAnalysisTool(tracedDeepAnalysisModel, workerProviderOptions, emitStep);
+                const parallelAnalysis = createParallelAnalysisTool(
+                    tracedParallelAnalysisModel,
+                    workerProviderOptions,
+                    emitStep,
+                );
+
+                const result = streamText({
+                    model: tracedModel,
+                    system: fullSystem,
+                    messages: modelMessages,
+                    tools: {
+                        ...sparkscanTools,
+                        ...flashnetTools,
+                        deepAnalysis,
+                        parallelAnalysis,
+                    },
+                    stopWhen: stepCountIs(5),
+                    onFinish: async () => {
+                        await posthog.shutdown();
+                    },
+                });
+
                 writer.merge(
                     // eslint-disable-next-line @typescript-eslint/no-explicit-any
                     result.toUIMessageStream().pipeThrough(createJsonRenderTransform()) as any,
