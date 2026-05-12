@@ -3,6 +3,7 @@ import { map, scrape, search } from 'firecrawl-aisdk';
 import { z } from 'zod';
 import { flashnetFetch, flashnetPost, sparkscanFetch } from './api';
 import { formatUsd } from './formatters';
+import { withTimeout } from './timeout';
 import type {
     AddressSummaryData,
     AddressTokensResponse,
@@ -606,6 +607,12 @@ function balancedTopN(items: ResearchItem[], topN: number): ResearchItem[] {
     return result;
 }
 
+// Per-source search timeouts. A hung Firecrawl or MCP search call shouldn't
+// make the whole `researchSearch` wait for the outer request timeout. The
+// Firecrawl `timeout` param also bounds the server-side work.
+const RESEARCH_SOURCE_TIMEOUT_MS = 10_000;
+const FIRECRAWL_SEARCH_TIMEOUT_MS = 8_000;
+
 export function createResearchSearchTool({ rerankModelId, sparkSearch, flashnetSearch }: ResearchSearchOptions) {
     return tool({
         description:
@@ -622,33 +629,48 @@ export function createResearchSearchTool({ rerankModelId, sparkSearch, flashnetS
         execute: async ({ query, topN }, { toolCallId, messages, abortSignal }) => {
             const callOpts = { toolCallId, messages, abortSignal };
             const [webRes, sparkRes, flashnetRes] = await Promise.allSettled([
-                (async (): Promise<ResearchItem[]> => {
-                    if (!search.execute) return [];
-                    const data = (await search.execute({ query, limit: 10 }, callOpts)) as {
-                        web?: Array<{ url?: string; title?: string; description?: string }>;
-                    };
-                    const items: ResearchItem[] = [];
-                    for (const r of data.web ?? []) {
-                        if (typeof r.url !== 'string') continue;
-                        items.push({
-                            source: 'web',
-                            title: r.title ?? r.url,
-                            url: r.url,
-                            snippet: r.description ?? '',
-                        });
-                    }
-                    return items;
-                })(),
-                (async (): Promise<ResearchItem[]> => {
-                    if (!sparkSearch?.execute) return [];
-                    const result = await sparkSearch.execute({ query }, callOpts);
-                    return mcpResultToItems(result, 'spark');
-                })(),
-                (async (): Promise<ResearchItem[]> => {
-                    if (!flashnetSearch?.execute) return [];
-                    const result = await flashnetSearch.execute({ query }, callOpts);
-                    return mcpResultToItems(result, 'flashnet');
-                })(),
+                withTimeout(
+                    (async (): Promise<ResearchItem[]> => {
+                        if (!search.execute) return [];
+                        const data = (await search.execute(
+                            { query, limit: 10, timeout: FIRECRAWL_SEARCH_TIMEOUT_MS },
+                            callOpts,
+                        )) as {
+                            web?: Array<{ url?: string; title?: string; description?: string }>;
+                        };
+                        const items: ResearchItem[] = [];
+                        for (const r of data.web ?? []) {
+                            if (typeof r.url !== 'string') continue;
+                            items.push({
+                                source: 'web',
+                                title: r.title ?? r.url,
+                                url: r.url,
+                                snippet: r.description ?? '',
+                            });
+                        }
+                        return items;
+                    })(),
+                    RESEARCH_SOURCE_TIMEOUT_MS,
+                    'researchSearch:web',
+                ),
+                withTimeout(
+                    (async (): Promise<ResearchItem[]> => {
+                        if (!sparkSearch?.execute) return [];
+                        const result = await sparkSearch.execute({ query }, callOpts);
+                        return mcpResultToItems(result, 'spark');
+                    })(),
+                    RESEARCH_SOURCE_TIMEOUT_MS,
+                    'researchSearch:spark',
+                ),
+                withTimeout(
+                    (async (): Promise<ResearchItem[]> => {
+                        if (!flashnetSearch?.execute) return [];
+                        const result = await flashnetSearch.execute({ query }, callOpts);
+                        return mcpResultToItems(result, 'flashnet');
+                    })(),
+                    RESEARCH_SOURCE_TIMEOUT_MS,
+                    'researchSearch:flashnet',
+                ),
             ]);
 
             const log = (label: string, res: PromiseSettledResult<unknown>) => {

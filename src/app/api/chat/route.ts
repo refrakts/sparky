@@ -14,6 +14,7 @@ import { env } from '@/env';
 import { sparkscanFetch } from '@/lib/api';
 import { getModel, getProviderOptions } from '@/lib/models';
 import posthogClient from '@/lib/posthog';
+import { withTimeout } from '@/lib/timeout';
 import {
     createDeepAnalysisTool,
     createParallelAnalysisTool,
@@ -30,42 +31,6 @@ export const maxDuration = 60;
 // the subagent gives up on it and proceeds with the healthy sources.
 const MCP_CONNECT_TIMEOUT_MS = 5_000;
 const MCP_TOOLS_TIMEOUT_MS = 5_000;
-
-/**
- * Race a promise against a timeout. On timeout, rejects with a labeled
- * Error. `onLateResolve` runs if the underlying promise eventually settles
- * fulfilled after the timeout fired, so callers can clean up orphan
- * resources (e.g. close an MCP client that connected too late).
- */
-function withTimeout<T>(
-    promise: Promise<T>,
-    ms: number,
-    label: string,
-    onLateResolve?: (value: T) => void,
-): Promise<T> {
-    let timedOut = false;
-    const timer = new Promise<never>((_, reject) => {
-        setTimeout(() => {
-            timedOut = true;
-            reject(new Error(`${label} timed out after ${ms}ms`));
-        }, ms);
-    });
-    promise.then(
-        (value) => {
-            if (timedOut && onLateResolve) {
-                try {
-                    onLateResolve(value);
-                } catch (error) {
-                    console.error(`[mcp] late-resolve cleanup for ${label} threw:`, error);
-                }
-            }
-        },
-        () => {
-            /* original rejection — withTimeout already routed it via race */
-        },
-    );
-    return Promise.race([promise, timer]);
-}
 
 /**
  * Connect to an MCP docs server with a timeout. If the connect succeeds
