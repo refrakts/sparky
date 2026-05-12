@@ -1,6 +1,6 @@
 import { generateText, type LanguageModel, stepCountIs, tool } from 'ai';
 import { z } from 'zod';
-import { flashnetFetch, sparkscanFetch } from './api';
+import { flashnetFetch, flashnetPost, sparkscanFetch } from './api';
 import { formatUsd } from './formatters';
 import type {
     AddressSummaryData,
@@ -456,19 +456,11 @@ export const flashnetTools = {
             assetBAmount: z.string().describe('Amount of asset B to add'),
         }),
         execute: async ({ poolId, assetAAmount, assetBAmount }) => {
-            const res = await fetch(
-                new URL(
-                    '/v1/liquidity/add/simulate',
-                    process.env.FLASHNET_API_URL || 'https://api.flashnet.xyz',
-                ).toString(),
-                {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ poolId, assetAAmount, assetBAmount }),
-                },
-            );
-            if (!res.ok) throw new Error(`Flashnet API error: ${res.status} ${res.statusText}`);
-            return res.json() as Promise<FlashnetSimulateAddLiquidityResponse>;
+            return flashnetPost<FlashnetSimulateAddLiquidityResponse>('/v1/liquidity/add/simulate', {
+                poolId,
+                assetAAmount,
+                assetBAmount,
+            });
         },
         toModelOutput: safeModelOutput(async ({ output }) => {
             const data = output as FlashnetSimulateAddLiquidityResponse;
@@ -487,19 +479,11 @@ export const flashnetTools = {
             lpTokensToRemove: z.string().describe('Number of LP tokens to burn'),
         }),
         execute: async ({ poolId, providerPublicKey, lpTokensToRemove }) => {
-            const res = await fetch(
-                new URL(
-                    '/v1/liquidity/remove/simulate',
-                    process.env.FLASHNET_API_URL || 'https://api.flashnet.xyz',
-                ).toString(),
-                {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ poolId, providerPublicKey, lpTokensToRemove }),
-                },
-            );
-            if (!res.ok) throw new Error(`Flashnet API error: ${res.status} ${res.statusText}`);
-            return res.json() as Promise<FlashnetSimulateRemoveLiquidityResponse>;
+            return flashnetPost<FlashnetSimulateRemoveLiquidityResponse>('/v1/liquidity/remove/simulate', {
+                poolId,
+                providerPublicKey,
+                lpTokensToRemove,
+            });
         },
         toModelOutput: safeModelOutput(async ({ output }) => {
             const data = output as FlashnetSimulateRemoveLiquidityResponse;
