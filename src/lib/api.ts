@@ -1,4 +1,6 @@
-const SPARKSCAN_API_URL = process.env.SPARKSCAN_API_URL || 'https://api.sparkscan.io';
+import { env } from '@/env';
+
+const SPARKSCAN_API_URL = env.SPARKSCAN_API_URL;
 
 /**
  * SECURITY: Network is ALWAYS hardcoded to MAINNET.
@@ -32,7 +34,7 @@ export async function sparkscanFetch<T>(
 
 // ─── Flashnet AMM API ───────────────────────────────────────────────
 
-const FLASHNET_API_URL = process.env.FLASHNET_API_URL || 'https://api.flashnet.xyz';
+const FLASHNET_API_URL = env.FLASHNET_API_URL;
 
 /**
  * Server-side only: fetch directly from the Flashnet AMM API.

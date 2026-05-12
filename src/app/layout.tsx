@@ -4,6 +4,7 @@ import { GeistMono } from 'geist/font/mono';
 import { GeistSans } from 'geist/font/sans';
 import type { Metadata } from 'next';
 import localFont from 'next/font/local';
+import { env } from '@/env';
 import { Providers } from './providers';
 import './globals.css';
 
@@ -19,7 +20,7 @@ const gelasio = localFont({
 });
 
 export const metadata: Metadata = {
-    metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000'),
+    metadataBase: new URL(env.NEXT_PUBLIC_SITE_URL),
     title: {
         template: '%s | Sparky',
         default: 'Sparky',

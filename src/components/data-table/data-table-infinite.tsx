@@ -32,6 +32,7 @@ import { DataTableResetButton } from '@/components/data-table/data-table-reset-b
 import { DataTableToolbar } from '@/components/data-table/data-table-toolbar'; // TODO: check where to put this
 import type { DataTableFilterField } from '@/components/data-table/types';
 import { Button } from '@/components/ui/button';
+import { env } from '@/env';
 import { useHotKey } from '@/hooks/use-hot-key';
 import { useLocalStorage } from '@/hooks/use-local-storage';
 import { getColumnOrderKey, getColumnVisibilityKey } from '@/lib/constants/local-storage';
@@ -165,7 +166,7 @@ export function DataTableInfinite<TData, TValue>({
         getFacetedUniqueValues: getFacetedUniqueValuesFlattened(),
         getFacetedMinMaxValues: getTTableFacetedMinMaxValues(),
         filterFns: { inDateRange, arrSome },
-        debugAll: process.env.NEXT_PUBLIC_TABLE_DEBUG === 'true',
+        debugAll: env.NEXT_PUBLIC_TABLE_DEBUG === 'true',
         meta: { getRowClassName },
     });
 

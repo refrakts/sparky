@@ -11,6 +11,7 @@ import {
     wrapLanguageModel,
 } from 'ai';
 import type { NextRequest } from 'next/server';
+import { env } from '@/env';
 import { sparkscanFetch } from '@/lib/api';
 import posthogClient from '@/lib/posthog';
 import { createDeepAnalysisTool, flashnetTools, sparkscanTools } from '@/lib/tools';
@@ -192,7 +193,7 @@ Keep each under 50 characters. Always use **full** identifiers (addresses, tx ID
 
 export async function POST(req: NextRequest) {
     try {
-        const cookieName = `ph_${process.env.NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN}_posthog`;
+        const cookieName = `ph_${env.NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN}_posthog`;
         const cookieValue = req.cookies.get(cookieName)?.value;
         const distinctId = cookieValue ? JSON.parse(cookieValue).distinct_id : undefined;
 
