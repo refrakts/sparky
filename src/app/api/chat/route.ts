@@ -167,19 +167,20 @@ async function fetchNetworkContext(): Promise<string> {
     }
 }
 
-async function buildSharedContext(): Promise<{
+interface SharedPromptContext {
     catalogPrompt: string;
     networkContext: string;
     timeContext: string;
-}> {
+}
+
+async function buildSharedContext(): Promise<SharedPromptContext> {
     const [catalogModule, networkContext] = await Promise.all([import('@/lib/catalog'), fetchNetworkContext()]);
     const catalogPrompt = catalogModule.catalog.prompt();
     const timeContext = `Current time: ${new Date().toISOString()} (UTC). User timezone is provided in messages via [Timezone: ...].`;
     return { catalogPrompt, networkContext, timeContext };
 }
 
-async function buildOrchestratorSystemPrompt(): Promise<string> {
-    const { catalogPrompt, networkContext, timeContext } = await buildSharedContext();
+function buildOrchestratorSystemPrompt({ catalogPrompt, networkContext, timeContext }: SharedPromptContext): string {
     return `You are the orchestrator for Sparky, a Spark blockchain analyst and explorer assistant.
 
 ## Session Context
@@ -274,8 +275,7 @@ Exactly 3 questions, each in double quotes, all wrapped in \`[suggestions: ...]\
 When you delegate, the writer handles suggestions — do NOT add them yourself.`;
 }
 
-async function buildWriterSystemPrompt(): Promise<string> {
-    const { catalogPrompt, networkContext, timeContext } = await buildSharedContext();
+function buildWriterSystemPrompt({ catalogPrompt, networkContext, timeContext }: SharedPromptContext): string {
     return `You are the writer agent for Sparky, a Spark blockchain analyst and explorer assistant. The orchestrator has already gathered data and is delegating the user-facing response to you.
 
 ## Session Context
@@ -424,10 +424,9 @@ export async function POST(req: NextRequest) {
             },
         });
 
-        const [orchestratorSystemPrompt, writerSystemPrompt] = await Promise.all([
-            buildOrchestratorSystemPrompt(),
-            buildWriterSystemPrompt(),
-        ]);
+        const sharedPromptContext = await buildSharedContext();
+        const orchestratorSystemPrompt = buildOrchestratorSystemPrompt(sharedPromptContext);
+        const writerSystemPrompt = buildWriterSystemPrompt(sharedPromptContext);
         const fullSystem =
             contextHints.length > 0
                 ? `${orchestratorSystemPrompt}\n\n## Current Client State\n${contextHints.join('\n')}`
