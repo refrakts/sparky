@@ -2,7 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { useMemo } from 'react';
-import { sparkscanProxyFetch } from '@/lib/api';
+import { sparkscanProxyFetch } from '@/lib/api-client';
 import type { WalletLeaderboard as WalletLeaderboardData } from '@/lib/types';
 import { useReportData } from '@/lib/use-report-data';
 import type { InferredColumn } from './column-inference';

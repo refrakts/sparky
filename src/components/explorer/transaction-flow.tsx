@@ -3,7 +3,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { type Edge, MarkerType, type Node, Position, ReactFlow } from '@xyflow/react';
 import { useMemo } from 'react';
-import { sparkscanProxyFetch } from '@/lib/api';
+import { sparkscanProxyFetch } from '@/lib/api-client';
 import type { Transaction } from '@/lib/types';
 import { useReportData } from '@/lib/use-report-data';
 import '@xyflow/react/dist/style.css';

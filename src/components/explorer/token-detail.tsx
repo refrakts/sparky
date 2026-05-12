@@ -5,7 +5,7 @@ import { useMemo } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { sparkscanProxyFetch } from '@/lib/api';
+import { sparkscanProxyFetch } from '@/lib/api-client';
 import { formatNumber, formatTimeago, formatTokenAmount, formatUsd } from '@/lib/formatters';
 import type { TokenDetail as TokenDetailData } from '@/lib/types';
 import { useReportData } from '@/lib/use-report-data';

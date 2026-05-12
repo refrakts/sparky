@@ -13,7 +13,7 @@ import {
     ChartTooltipContent,
 } from '@/components/ui/chart';
 import { Skeleton } from '@/components/ui/skeleton';
-import { sparkscanProxyFetch } from '@/lib/api';
+import { sparkscanProxyFetch } from '@/lib/api-client';
 import { formatUsd } from '@/lib/formatters';
 import type { AddressTokensResponse } from '@/lib/types';
 import { useReportData } from '@/lib/use-report-data';
