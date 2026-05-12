@@ -5,6 +5,7 @@ import {
     convertToModelMessages,
     createUIMessageStream,
     createUIMessageStreamResponse,
+    hasToolCall,
     stepCountIs,
     streamText,
     type ToolSet,
@@ -17,6 +18,7 @@ import posthogClient from '@/lib/posthog';
 import { withTimeout } from '@/lib/timeout';
 import {
     createDeepAnalysisTool,
+    createDelegateToWriterTool,
     createParallelAnalysisTool,
     createResearchSearchTool,
     flashnetTools,
@@ -422,7 +424,10 @@ export async function POST(req: NextRequest) {
             },
         });
 
-        const orchestratorSystemPrompt = await buildOrchestratorSystemPrompt();
+        const [orchestratorSystemPrompt, writerSystemPrompt] = await Promise.all([
+            buildOrchestratorSystemPrompt(),
+            buildWriterSystemPrompt(),
+        ]);
         const fullSystem =
             contextHints.length > 0
                 ? `${orchestratorSystemPrompt}\n\n## Current Client State\n${contextHints.join('\n')}`
@@ -449,6 +454,19 @@ export async function POST(req: NextRequest) {
             },
         });
         const workerProviderOptions = getProviderOptions('worker');
+
+        // Writer model — handles the user-facing synthesis when the orchestrator
+        // delegates via `delegateToWriter`. Trivial direct-render turns bypass it.
+        const writerModel = await getModel('writer');
+        const tracedWriterModel = withTracing(writerModel, posthog, {
+            posthogDistinctId: distinctId,
+            posthogTraceId: traceId,
+            posthogProperties: {
+                $ai_span_name: 'writer',
+                ...baseProperties,
+            },
+        });
+        const writerProviderOptions = getProviderOptions('writer');
 
         // Lazy MCP wiring: connecting to the docs MCPs and listing their
         // tools is deferred until the first subagent invocation. Simple
@@ -487,6 +505,12 @@ export async function POST(req: NextRequest) {
                         mcpExtras.getExtras,
                         emitStep,
                     );
+                    const delegateToWriter = createDelegateToWriterTool(
+                        tracedWriterModel,
+                        writerSystemPrompt,
+                        writerProviderOptions,
+                        writer,
+                    );
 
                     const result = streamText({
                         model: tracedModel,
@@ -497,8 +521,9 @@ export async function POST(req: NextRequest) {
                             ...flashnetTools,
                             deepAnalysis,
                             parallelAnalysis,
+                            delegateToWriter,
                         },
-                        stopWhen: stepCountIs(5),
+                        stopWhen: [stepCountIs(5), hasToolCall('delegateToWriter')],
                         onFinish: cleanup,
                         onError: ({ error }) => {
                             console.error('[chat] stream error:', error);
