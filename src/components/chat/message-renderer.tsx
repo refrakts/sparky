@@ -19,7 +19,10 @@ interface SpecNode {
         layout?: 'inline' | 'panel' | string;
         [key: string]: unknown;
     };
+    /** Root element key on the top-level Spec wrapper (flat-map shape). */
+    root?: string;
     elements?: Record<string, SpecNode>;
+    /** In the flat-map shape, children are string keys into `elements`. */
     children?: unknown[];
 }
 
@@ -302,22 +305,23 @@ const DEFAULT_PANEL_COMPONENTS = new Set([
     'TransactionFlow',
 ]);
 
+/** Layout wrappers that should not be used as a panel title — we want the content type instead */
+const LAYOUT_WRAPPER_TYPES = new Set(['Grid', 'GridItem']);
+
 /**
- * Walk a spec and all its elements, checking if any node matches a predicate.
- * Handles both resolved tree specs (nested children) and flat element-map specs.
+ * Returns true if any element in the spec matches the predicate. Order doesn't
+ * matter and orphans count — use this for "does this spec contain anything that
+ * looks like X" decisions (e.g. panel-component detection).
  */
 function specTreeHas(spec: SpecNode | null | undefined, predicate: (node: SpecNode) => boolean): boolean {
     if (!spec) return false;
 
-    // Check the root node itself
     if (predicate(spec)) return true;
 
-    // Flat element map (raw JSON Render spec shape: { elements: { id: { type, props, children } } })
     if (spec.elements && typeof spec.elements === 'object') {
         return Object.values(spec.elements).some((el) => el && predicate(el));
     }
 
-    // Resolved tree with nested children
     if (Array.isArray(spec.children)) {
         return spec.children.some((child) =>
             typeof child === 'object' && child !== null ? specTreeHas(child as SpecNode, predicate) : false,
@@ -325,6 +329,43 @@ function specTreeHas(spec: SpecNode | null | undefined, predicate: (node: SpecNo
     }
 
     return false;
+}
+
+/**
+ * Walk the rendered tree of a JSON Render spec in render order: start at
+ * `spec.elements[spec.root]` and follow child IDs through `spec.elements`.
+ * Returns the first node matching the predicate, or undefined. Orphan
+ * elements and the order keys were emitted in are ignored.
+ */
+function specTreeFind(spec: SpecNode | null | undefined, predicate: (node: SpecNode) => boolean): SpecNode | undefined {
+    if (!spec?.elements || !spec.root) return undefined;
+
+    const visited = new Set<string>();
+    const stack: string[] = [spec.root];
+    while (stack.length > 0) {
+        const id = stack.pop();
+        if (!id || visited.has(id)) continue;
+        visited.add(id);
+
+        const node = spec.elements[id];
+        if (!node) continue;
+        if (predicate(node)) return node;
+
+        if (Array.isArray(node.children)) {
+            // children are string keys in the flat-map shape. Push right-to-left
+            // so the leftmost child is popped first (depth-first, render order).
+            for (let i = node.children.length - 1; i >= 0; i--) {
+                const childId = node.children[i];
+                if (typeof childId === 'string') stack.push(childId);
+            }
+        }
+    }
+
+    return undefined;
+}
+
+function formatTypeName(type: string): string {
+    return type.replace(/([a-z])([A-Z])/g, '$1 $2');
 }
 
 /**
@@ -376,11 +417,12 @@ export function MessageRenderer({ message, isStreaming, onSuggestionClick }: Mes
     // Show pondering when: streaming with no text/spec, AND either no tools yet or all tools finished (model is thinking)
     const showPondering = isStreaming && !textContent && !hasSpec && (toolParts.length === 0 || allToolsDone);
 
-    // Derive a title from the spec for the panel header
-    const specTitle =
-        hasSpec && spec
-            ? ((spec as { type?: string }).type?.replace(/([a-z])([A-Z])/g, '$1 $2') ?? 'Result')
-            : 'Result';
+    // Derive a title from the spec for the panel header. If the root is a layout
+    // wrapper (Grid/GridItem) or has no type, walk the tree for the first
+    // user-meaningful component name.
+    const titleNode =
+        hasSpec && spec ? specTreeFind(spec, (n) => !!n.type && !LAYOUT_WRAPPER_TYPES.has(n.type)) : undefined;
+    const specTitle = titleNode?.type ? formatTypeName(titleNode.type) : 'Result';
 
     const inline = hasSpec && spec ? shouldRenderInline(spec) : false;
 
