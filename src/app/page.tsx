@@ -24,13 +24,19 @@ export default function HomePage() {
         <div className="relative isolate flex h-full flex-col">
             <Watercolor
                 className="-z-10 pointer-events-none absolute inset-0"
-                color1="#f5ecd9"
-                color2="#d6e4f0"
-                speed={reduced ? 0 : 0.35}
-                scale={0.85}
-                saturation={1}
-                brightness={0}
-                opacity={0.55}
+                color1="#0a0a0a"
+                color2="#e0e0e0"
+                speed={reduced ? 0 : 0.6}
+                scale={0.6}
+                octaves={6}
+                persistence={0.6}
+                lacunarity={2.4}
+                driftSpeed={0.04}
+                warpSpeed={0.08}
+                colorGain={1}
+                saturation={0}
+                brightness={0.15}
+                opacity={0.35}
                 cursorInteraction
                 cursorIntensity={0.6}
             />
