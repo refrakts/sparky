@@ -15,12 +15,16 @@ import { Button } from '@/components/ui/button';
 import { TextAnimate } from '@/components/ui/text-animate';
 import { detectFastPath, type FastPathMatch } from '@/lib/fast-path';
 import { useRenderedSummary } from '@/lib/rendered-context';
+import type { SubagentStepEvent } from '@/lib/tools';
 import { cn } from '@/lib/utils';
 import { ChatPanelProvider, useChatPanel } from './chat-panel';
 import { FastPathResult } from './fast-path-result';
 import { MessageRenderer } from './message-renderer';
 
-type AppDataParts = { [SPEC_DATA_PART]: SpecDataPart };
+type AppDataParts = {
+    [SPEC_DATA_PART]: SpecDataPart;
+    subagentStep: SubagentStepEvent;
+};
 type AppMessage = UIMessage<unknown, AppDataParts>;
 
 interface FastPathEntry {
@@ -54,6 +58,7 @@ function ChatPageInner() {
     } = useChat<AppMessage>({
         dataPartSchemas: {
             [SPEC_DATA_PART]: { schema: z.any() },
+            subagentStep: { schema: z.any() },
         } as never,
     });
 
