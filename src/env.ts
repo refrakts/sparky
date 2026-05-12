@@ -27,6 +27,7 @@ export const env = createEnv({
         // `google/gemini-2.5-flash-lite`).
         MODEL_ORCHESTRATOR: z.string().default('cohere/command-a'),
         MODEL_WORKER: z.string().default('google/gemini-2.5-flash-lite'),
+        MODEL_WRITER: z.string().default('google/gemini-3.1-pro-preview'),
 
         // Reranking model for worker `researchSearch` fusion across Firecrawl
         // + Spark/Flashnet docs MCPs. Routes through the AI Gateway —
@@ -56,6 +57,7 @@ export const env = createEnv({
         FLASHNET_MCP_URL: process.env.FLASHNET_MCP_URL,
         MODEL_ORCHESTRATOR: process.env.MODEL_ORCHESTRATOR,
         MODEL_WORKER: process.env.MODEL_WORKER,
+        MODEL_WRITER: process.env.MODEL_WRITER,
         MODEL_RERANK: process.env.MODEL_RERANK,
         WORKER_REASONING_EFFORT: process.env.WORKER_REASONING_EFFORT,
         NEXT_PUBLIC_SITE_URL: process.env.NEXT_PUBLIC_SITE_URL,
