@@ -1,4 +1,15 @@
-import { gateway, generateText, type LanguageModel, rerank, stepCountIs, type Tool, type ToolSet, tool } from 'ai';
+import {
+    gateway,
+    generateText,
+    type LanguageModel,
+    rerank,
+    stepCountIs,
+    streamText,
+    type Tool,
+    type ToolSet,
+    tool,
+    type UIMessageStreamWriter,
+} from 'ai';
 import { map, scrape, search } from 'firecrawl-aisdk';
 import { z } from 'zod';
 import { flashnetFetch, flashnetPost, sparkscanFetch } from './api';
@@ -915,5 +926,49 @@ export function createParallelAnalysisTool(
                 .join('\n\n');
             return textOutput(body);
         }),
+    });
+}
+
+// ─── Writer Delegation ──────────────────────────────────────────────
+
+export const delegateToWriterInputSchema = z.object({
+    brief: z
+        .string()
+        .min(1)
+        .max(500)
+        .describe(
+            'Short directive for the writer — tone, structure, points to emphasize, components to consider. Under 500 chars.',
+        ),
+    user_query: z.string().min(1).describe('The original user question, verbatim.'),
+    on_screen_context: z
+        .string()
+        .optional()
+        .describe('What components/data the user can already see (copy from [Currently displayed on screen: ...]).'),
+    findings: z
+        .array(
+            z.object({
+                source: z
+                    .string()
+                    .min(1)
+                    .describe('Tool or subagent name (e.g. "parallelAnalysis", "getTokenLeaderboard").'),
+                data: z.string().min(1).describe('Full JSON or markdown result from that tool/subagent.'),
+            }),
+        )
+        .min(1)
+        .describe('All gathered data the writer needs. Writer is stateless — anything not here is invisible.'),
+});
+
+export function createDelegateToWriterTool(
+    model: LanguageModel,
+    systemPrompt: string,
+    providerOptions: GenerateTextProviderOptions | undefined,
+    uiWriter: UIMessageStreamWriter,
+) {
+    return tool({
+        description:
+            'Hand off to the writer agent for the user-facing response. Use after gathering all needed data via tools/subagents. After calling this you MUST NOT write any more text or call any more tools — the writer produces the final output.',
+        inputSchema: delegateToWriterInputSchema,
+        // Stub — execute is implemented in the next commit.
+        execute: async () => ({ delegated: true as const }),
     });
 }
