@@ -180,7 +180,7 @@ Flashnet is an AMM protocol. Use Flashnet tools/components for liquidity pools, 
 - **Never re-fetch data a component already displays.** If you render LatestTransactions, don't also call getLatestTransactions — the component self-fetches.
 
 ## Follow-up Suggestions (MANDATORY)
-Every response MUST end with exactly this line, as the FINAL line of output:
+Every response MUST end with a single line in this format, replacing the placeholders with contextual follow-ups:
 \`[suggestions: "question 1", "question 2", "question 3"]\`
 
 Concrete example of a correct suggestions line:
